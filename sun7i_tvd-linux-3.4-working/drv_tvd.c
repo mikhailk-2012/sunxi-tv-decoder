@@ -515,7 +515,17 @@ static int vidioc_g_fmt_vid_cap(struct file *file, void *priv,struct v4l2_format
 	struct tvd_dev *dev = video_drvdata(file);
 
 	__dbg("%s\n", __FUNCTION__);
-	
+
+        // if the first time called....
+	if( !dev->fmt )
+	{
+	   __inf("%s: this is not set yet: %d, %d\n", __FUNCTION__, dev->width, dev->height );
+	   dev->fmt                = &tvd_fmt;
+	   dev->vb_vidq.field      = V4L2_FIELD_NONE;
+	   dev->width              = tvd_fmt.width;
+	   dev->height             = tvd_fmt.height;
+        }
+
 	format->fmt.pix.width        = dev->width;
 	format->fmt.pix.height       = dev->height;
 	format->fmt.pix.field        = dev->vb_vidq.field;
@@ -581,15 +591,23 @@ static int vidioc_s_fmt_vid_cap(struct file *file, void *priv,struct v4l2_format
 	dev->channel_index[2]   = 0;
 	dev->channel_index[3]   = 0;
 
+   	tvd_fmt.width           = dev->width;
+	tvd_fmt.height          = dev->height;
+
         TVD_config(dev->interface, dev->system);
 
 	TVD_set_width(0,format->fmt.pix.width);
 	TVD_set_width_jump(0,format->fmt.pix.width);
 	TVD_set_height(0,format->fmt.pix.height/2);//for interlace here set half of heigh       
-	TVD_set_fmt(0, dev->format+1);
+	TVD_set_fmt(0, TVD_PL_YUV420 );
     
         dev->channel_offset_y[0] = 0;
         dev->channel_offset_c[0] = 0;
+
+	if (tvd_clk_init(dev,dev->interface)) 
+	{
+	  __err("clock init fail!\n");
+	}
 	
 out:
 	mutex_unlock(&q->vb_lock);
@@ -1011,7 +1029,7 @@ static int buffer_setup(struct videobuf_queue *vq, unsigned int *count, unsigned
 	switch (dev->fmt->output_fmt) {
 		case TVD_MB_YUV420:
 		case TVD_PL_YUV420:
-			*size = dev->width * dev->height * 3/2;
+		       *size = (dev->width * dev->height * 3)/2;
 			break;	
 		case TVD_PL_YUV422:
 		default:
@@ -1025,9 +1043,9 @@ static int buffer_setup(struct videobuf_queue *vq, unsigned int *count, unsigned
 	if (*count < 3) {
 		*count = 3;
 		__err("buffer count is invalid, set to 3\n");
-	} else if(*count > 5) {	
-		*count = 5;
-		__err("buffer count is invalid, set to 5\n");
+	} else if(*count > 32) {	
+	       __err("buffer count is invalid(%d), set to 32\n", *count );
+		*count = 32;
 	}
 
 	while (*size * *count > MAX_BUFFER) {//FIXME
