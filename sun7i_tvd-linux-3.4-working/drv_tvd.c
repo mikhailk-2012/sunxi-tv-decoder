@@ -33,13 +33,23 @@
 #include "drv_tvd.h"
 
 #define DBG_EN 0
+#define ERR_EN 0
+#define INF_EN 0
 #if(DBG_EN == 1)		
 	#define __dbg(x, arg...) printk("[TVD_DBG]"x, ##arg)
 #else
 	#define __dbg(x, arg...) 
 #endif
-#define __err(x, arg...) printk(KERN_INFO"[TVD_ERR]"x, ##arg)
-#define __inf(x, arg...) printk(KERN_INFO"[TVD_INF]"x, ##arg)
+#if(ERR_EN == 1)
+	#define __err(x, arg...) printk(KERN_INFO"[TVD_ERR]"x, ##arg)
+#else
+	#define __err(x, arg...)
+#endif
+#if(INF_EN == 1)
+	#define __inf(x, arg...) printk(KERN_INFO"[TVD_INF]"x, ##arg)
+#else
+	#define __inf(x, arg...)
+#endif
 
 
 static int is_generating(struct tvd_dev *dev)
@@ -117,24 +127,24 @@ static irqreturn_t tvd_irq(int irq, void *priv)
 		goto set_next_addr;
 	}
 	
-	if (list_empty(&dma_q->active)) {		
-		__err("No active queue to serve\n");		
-		goto unlock;	
+	if (list_empty(&dma_q->active)) {
+		__err("No active queue to serve\n");
+		goto unlock;
 	}
 	
 	buf = list_entry(dma_q->active.next,struct buffer, vb.queue);
-	__dbg("buf ptr=%p\n",buf);
 
-	/* Nobody is waiting on this buffer*/	
-
+	/* Nobody is waiting on this buffer*/
 	if (!waitqueue_active(&buf->vb.done)) {
-		__dbg(" Nobody is waiting on this buffer,buf = 0x%p\n",buf);					
+		__dbg("Nobody is waiting on this buffer,buf = 0x%p (buffer %d)\n", buf, buf->vb.i);
 	}
 	
 	list_del(&buf->vb.queue);
 
 	do_gettimeofday(&buf->vb.ts);
 	buf->vb.field_count++;
+
+	__dbg("done buf = 0x%p (buffer %d), ts %ld.%ld\n", buf, buf->vb.i, (long)buf->vb.ts.tv_sec, buf->vb.ts.tv_usec);
 
 	dev->ms += jiffies_to_msecs(jiffies - dev->jiffies);
 	dev->jiffies = jiffies;
@@ -520,6 +530,8 @@ static int vidioc_g_fmt_vid_cap(struct file *file, void *priv,struct v4l2_format
 
 static int vidioc_s_fmt_vid_cap(struct file *file, void *priv,struct v4l2_format *format)
 {
+	__dbg("%s\n", __FUNCTION__);
+	
         int ret = 0;
 	struct tvd_dev *dev = video_drvdata(file);
 	struct videobuf_queue *q = &dev->vb_vidq;
@@ -683,6 +695,7 @@ static int vidioc_reqbufs(struct file *file, void *priv,struct v4l2_requestbuffe
 	struct tvd_dev *dev = video_drvdata(file);
 	
 	__dbg("%s\n", __FUNCTION__);
+	__dbg("buffs requested: count=%d, type=%d, mem=%d\n", p->count, p->type, p->memory);
 	
 	return videobuf_reqbufs(&dev->vb_vidq, p);
 }
@@ -690,7 +703,7 @@ static int vidioc_reqbufs(struct file *file, void *priv,struct v4l2_requestbuffe
 static int vidioc_querybuf(struct file *file, void *priv, struct v4l2_buffer *p)
 {
 	struct tvd_dev *dev = video_drvdata(file);
-	__dbg("%s\n", __FUNCTION__);
+	__dbg("%s: buffer %d\n", __FUNCTION__, p->index);
 	
 	return videobuf_querybuf(&dev->vb_vidq, p);
 }
@@ -698,17 +711,24 @@ static int vidioc_querybuf(struct file *file, void *priv, struct v4l2_buffer *p)
 static int vidioc_qbuf(struct file *file, void *priv, struct v4l2_buffer *p)
 {
 	struct tvd_dev *dev = video_drvdata(file);
-	__dbg("%s\n", __FUNCTION__);
+	__dbg("%s: buffer %d\n", __FUNCTION__, p->index);
 	
 	return videobuf_qbuf(&dev->vb_vidq, p);
 }
 
 static int vidioc_dqbuf(struct file *file, void *priv, struct v4l2_buffer *p)
 {
+	int ret;
+	
 	struct tvd_dev *dev = video_drvdata(file);
-	__dbg("%s\n", __FUNCTION__);
 
-	return videobuf_dqbuf(&dev->vb_vidq, p, file->f_flags & O_NONBLOCK);
+	__dbg("%s: buffer dequeue requested\n", __FUNCTION__);
+	ret = videobuf_dqbuf(&dev->vb_vidq, p, file->f_flags & O_NONBLOCK);
+	if (ret == 0)
+		__dbg("%s: dequeued buffer %d, flags %d\n", __FUNCTION__, p->index, p->flags);
+	else
+		__dbg("%s: error dequeueing, error %d\n", __FUNCTION__, -ret);
+	return ret;
 }
 
 #ifdef CONFIG_VIDEO_V4L1_COMPAT
@@ -829,7 +849,7 @@ static int vidioc_enum_input(struct file *file, void *priv,struct v4l2_input *in
 {
 	__dbg("%s\n", __FUNCTION__);
 	if (inp->index > NUM_INPUTS-1) {
-		__err("input index invalid!\n");
+		__err("input index invalid! idx: %d\n", inp->index);
 		return -EINVAL;
 	}
 
@@ -1038,7 +1058,8 @@ static int buffer_prepare(struct videobuf_queue *vq, struct videobuf_buffer *vb,
 	struct buffer *buf = container_of(vb, struct buffer, vb);
 	int rc;
 
-	__dbg("%s\n", __FUNCTION__);
+	__dbg("%s: buffer %d\n", __FUNCTION__, vb->i);
+	__dbg("req. field: %d\n", field);
 
 	BUG_ON(NULL == dev->fmt);
 
@@ -1082,7 +1103,7 @@ static void buffer_queue(struct videobuf_queue *vq, struct videobuf_buffer *vb)
 	struct buffer *buf = container_of(vb, struct buffer, vb);
 	struct dmaqueue *vidq = &dev->vidq;
 
-	__dbg("%s\n", __FUNCTION__);
+	__dbg("%s: buffer %d\n", __FUNCTION__, vb->i);
 	buf->vb.state = VIDEOBUF_QUEUED;
 	list_add_tail(&buf->vb.queue, &vidq->active);
 }
