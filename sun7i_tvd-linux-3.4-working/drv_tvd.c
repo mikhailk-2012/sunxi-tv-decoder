@@ -235,7 +235,7 @@ cnf_clk_rate:
         {
                 __err("set tvd parent clock error!\n");
 	        return -1;
-        }     
+        }
         
 	ret = clk_set_parent(dev->module1_clk, module_clk_src);
 	if (ret == -1)
@@ -538,8 +538,9 @@ static int vidioc_g_fmt_vid_cap(struct file *file, void *priv,struct v4l2_format
 	format->fmt.pix.height       = dev->height;
 	format->fmt.pix.field        = dev->vb_vidq.field;
 	format->fmt.pix.pixelformat  = dev->fmt->fourcc;
-	format->fmt.pix.bytesperline = (format->fmt.pix.width * dev->fmt->depth) >> 3;
-	format->fmt.pix.sizeimage    = format->fmt.pix.height * format->fmt.pix.bytesperline;
+	format->fmt.pix.bytesperline = format->fmt.pix.width;
+	format->fmt.pix.sizeimage    = format->fmt.pix.height * format->fmt.pix.bytesperline * dev->fmt->depth / 8;
+	// Sizeimage is usually (width*height*depth)/8 for uncompressed images, but it's different if bytesperline is used since there could be some padding between lines. 
 	
 	printk("CALCULATIONS: %i, %i\n", format->fmt.pix.bytesperline, format->fmt.pix.sizeimage);
 
@@ -618,8 +619,9 @@ static int vidioc_s_fmt_vid_cap(struct file *file, void *priv,struct v4l2_format
 	}
 	
 out:
+	vidioc_g_fmt_vid_cap(file, priv, format); // return current fmt
+	
 	mutex_unlock(&q->vb_lock);
-
 
 	return ret;
 }
@@ -914,6 +916,7 @@ static int vidioc_queryctrl(struct file *file, void *priv,struct v4l2_queryctrl 
 	struct tvd_dev *dev = video_drvdata(file);	
 	__dbg("%s\n", __FUNCTION__);
 #endif		
+	return -EINVAL;
 	return ret;
 }
 
