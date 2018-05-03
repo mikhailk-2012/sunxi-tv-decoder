@@ -911,47 +911,49 @@ static int vidioc_s_input(struct file *file, void *priv, unsigned int i)
 
 static int vidioc_queryctrl(struct file *file, void *priv,struct v4l2_queryctrl *qc)
 {
-        int ret=0;
-#if 0        
-	struct tvd_dev *dev = video_drvdata(file);	
+	bool next;
+	__u32 id;
+	
+	//struct tvd_dev *dev = video_drvdata(file);	
 	__dbg("%s\n", __FUNCTION__);
-#endif		
+
+	next = qc->id & V4L2_CTRL_FLAG_NEXT_CTRL;
+	id = qc->id & (~V4L2_CTRL_FLAG_NEXT_CTRL);
+	if (next && id < V4L2_CID_MIN_BUFFERS_FOR_CAPTURE)
+		qc->id = V4L2_CID_MIN_BUFFERS_FOR_CAPTURE;
+	
+	if (qc->id == V4L2_CID_MIN_BUFFERS_FOR_CAPTURE) {
+		qc->type = V4L2_CTRL_TYPE_INTEGER;
+		qc->minimum = 3;
+		qc->maximum = 3;
+		qc->default_value = 3;
+		qc->flags = V4L2_CTRL_FLAG_READ_ONLY;
+		return 0;
+	}
+
 	return -EINVAL;
-	return ret;
 }
 
 static int vidioc_g_ctrl(struct file *file, void *priv,struct v4l2_control *ctrl)
 {
-        int ret=0;
-#if 0        
-	struct tvd_dev *dev = video_drvdata(file);	
+	//struct tvd_dev *dev = video_drvdata(file);	
 	__dbg("%s\n", __FUNCTION__);
-#endif		
-	return ret;
+	
+	if (ctrl->id == V4L2_CID_MIN_BUFFERS_FOR_CAPTURE) {
+		ctrl->value = 3;
+		return 0;
+	}
+	
+	return -EINVAL;
 }
 
 
 static int vidioc_s_ctrl(struct file *file, void *priv,struct v4l2_control *ctrl)
 {
-        int ret=0;
-#if 0     
-	struct tvd_dev *dev = video_drvdata(file);
-	struct v4l2_queryctrl qc;
-	
+	struct tvd_dev *dev = video_drvdata(file);	
 	__dbg("%s\n", __FUNCTION__);
 	
-	qc.id = ctrl->id;
-	ret = vidioc_queryctrl(file, priv, &qc);
-	if (ret < 0) {
-		return ret;
-	}
-
-	if (ctrl->value < qc.minimum || ctrl->value > qc.maximum) {
-		return -ERANGE;
-	}
-
-#endif
-	return ret;
+	return -EINVAL;
 }
 
 static int vidioc_g_parm(struct file *file, void *priv,struct v4l2_streamparm *parms) 
