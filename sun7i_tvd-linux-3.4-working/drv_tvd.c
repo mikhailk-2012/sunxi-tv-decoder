@@ -180,6 +180,7 @@ static int tvd_clk_init(struct tvd_dev *dev,int interface)
 {
 	int ret;
 	struct clk *module_clk_src;
+	unsigned long desired_rate;
 
 	dev->ahb_clk=clk_get(NULL, "ahb_tvd");
 	if (NULL == dev->ahb_clk || IS_ERR(dev->ahb_clk))
@@ -209,20 +210,27 @@ static int tvd_clk_init(struct tvd_dev *dev,int interface)
 		return -1;
         }
 
-	module_clk_src=clk_get(NULL,"video_pll0"); //can select video_pll0 or video_pll1
-	if (NULL == module_clk_src || IS_ERR(module_clk_src))
-        {
-   		__err("get tvd clock source error!\n");	
+        // configure module clock source, choosing from clocks video_pll0 and video_pll1. Before seting clock rate, check if any clock has already configured the desired one.
+        desired_rate = interface == 2 ? 270000000 : 297000000; // interface 2 = YpbPr_P, else CVBS and YPbPr_I
+	
+	// try video_pll1 clock (video_pll1 is chosen first by display driver, so we can reuse if it already has the desired rate, letting video_pll0 free for other usages)
+	module_clk_src= clk_get(NULL,"video_pll1");
+	if (NULL == module_clk_src || IS_ERR(module_clk_src)) {
+		__err("get tvd clock source error!\n");	
 		return -1;
-        }
-
-        if (interface == 2) {//YpbPr_P
-		//ret = clk_set_rate(module_clk_src, 330000000); //264000000//297000000
-		ret = clk_set_rate(module_clk_src, 270000000); //264000000//297000000
-	} else {//CVBS and YPbPr_I
-    		ret = clk_set_rate(module_clk_src, 297000000); //264000000//297000000
 	}
-
+	if (clk_get_rate(module_clk_src) == desired_rate)
+		goto cnf_clk_rate;
+	
+	// video_pll1 doesn't has desired rate, try video_pll0 clock (set the desired rate if it hasn't it already)
+	module_clk_src= clk_get(NULL,"video_pll0");
+	if (NULL == module_clk_src || IS_ERR(module_clk_src)) {
+		__err("get tvd clock source error!\n");	
+		return -1;
+	}
+        
+cnf_clk_rate:
+	ret = clk_set_rate(module_clk_src, desired_rate);	// FIXME: this can break something if video_pll0 is already in use, for a second monitor for example
 	if (ret == -1)
         {
                 __err("set tvd parent clock error!\n");
