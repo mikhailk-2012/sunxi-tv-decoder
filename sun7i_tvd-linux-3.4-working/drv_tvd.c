@@ -137,6 +137,7 @@ static irqreturn_t tvd_irq(int irq, void *priv)
 	/* Nobody is waiting on this buffer*/
 	if (!waitqueue_active(&buf->vb.done)) {
 		__dbg("Nobody is waiting on this buffer,buf = 0x%p (buffer %d)\n", buf, buf->vb.i);
+		goto unlock; // skip this frame data, don't dequeue buffer and overwrite it with next frame data
 	}
 	
 	list_del(&buf->vb.queue);
