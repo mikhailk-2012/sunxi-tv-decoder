@@ -36,17 +36,17 @@
 #define ERR_EN 0
 #define INF_EN 0
 #if(DBG_EN == 1)		
-	#define __dbg(x, arg...) printk("[TVD_DBG]"x, ##arg)
+	#define __dbg(x, arg...) printk(KERN_DEBUG "[TVD_DBG]"x, ##arg)
 #else
 	#define __dbg(x, arg...) 
 #endif
 #if(ERR_EN == 1)
-	#define __err(x, arg...) printk(KERN_INFO"[TVD_ERR]"x, ##arg)
+	#define __err(x, arg...) printk(KERN_ERR "[TVD_ERR]"x, ##arg)
 #else
 	#define __err(x, arg...)
 #endif
 #if(INF_EN == 1)
-	#define __inf(x, arg...) printk(KERN_INFO"[TVD_INF]"x, ##arg)
+	#define __inf(x, arg...) printk(KERN_INFO "[TVD_INF]"x, ##arg)
 #else
 	#define __inf(x, arg...)
 #endif
@@ -73,23 +73,22 @@ static void stop_generating(struct tvd_dev *dev)
 static struct fmt * get_format(struct v4l2_format *format)
 {
 	struct fmt *fmt;
-	unsigned int k;
+	unsigned int i, k;
 
 	for (k = 0; k < ARRAY_SIZE(formats); k++) {
 		fmt = &formats[k];
-		if (fmt->fourcc == format->fmt.pix.pixelformat && fmt->width == format->fmt.pix.width && fmt->height == format->fmt.pix.height ) 
-                {
-			__dbg("fmt->fourcc = %d, fmt->width=%d, fmt->height = %d\n", fmt->fourcc, fmt->width, fmt->height); 	
-			break;
+		if (fmt->fourcc == format->fmt.pix.pixelformat) {
+			for (i = 0; i < fmt->sizes_cnt; i++) {
+				if (fmt->sizes[i].width == format->fmt.pix.width && fmt->sizes[i].height == format->fmt.pix.height) {
+					__dbg("%s: fmt->fourcc = %d, fmt->width=%d, fmt->height = %d\n", __FUNCTION__, fmt->fourcc, fmt->width, fmt->height); 	
+					return fmt;
+				}
+			}
 		}
 	}
-	__dbg("fmt->fourcc = %d, fmt->width=%d, fmt->height = %d\n", format->fmt.pix.pixelformat, format->fmt.pix.width, format->fmt.pix.height);
-
-	if (k == ARRAY_SIZE(formats)) {
-		return NULL;
-	}	
-
-	return &formats[k];
+	
+	__dbg("%s: invalid format (fmt=%d, width=%d, height=%d\n", __FUNCTION__, format->fmt.pix.pixelformat, format->fmt.pix.width, format->fmt.pix.height);
+	return NULL;
 };
 
 static inline void set_addr(struct tvd_dev *dev,struct buffer *buffer)
@@ -486,6 +485,28 @@ static int vidioc_enum_fmt_vid_cap(struct file *file, void  *priv,struct v4l2_fm
 	return 0;
 }
 
+static int vidioc_enum_framesizes (struct file *file, void *priv, struct v4l2_frmsizeenum *frmsize)
+{
+	int i;
+	
+	__dbg("%s: idx=%d, format=%d\n", __FUNCTION__, frmsize->index, frmsize->pixel_format);
+	
+	for (i = 0; i < ARRAY_SIZE(formats); i++) {
+		if (frmsize->pixel_format == formats[i].fourcc) {
+			if (frmsize->index < formats[i].sizes_cnt) {
+				frmsize->type = V4L2_FRMSIZE_TYPE_DISCRETE;
+				frmsize->discrete.width = formats[i].sizes[frmsize->index].width;
+				frmsize->discrete.height = formats[i].sizes[frmsize->index].height;
+				return  0;
+			}
+			else {
+				return -EINVAL;
+			}
+		}
+	}
+	return -EINVAL;
+}
+
 static int vidioc_try_fmt_vid_cap(struct file *file, void *priv,struct v4l2_format *format)
 {
         int ret = 0;
@@ -531,8 +552,8 @@ static int vidioc_g_fmt_vid_cap(struct file *file, void *priv,struct v4l2_format
 	   __inf("%s: this is not set yet: %d, %d\n", __FUNCTION__, dev->width, dev->height );
 	   dev->fmt                = &tvd_fmt;
 	   dev->vb_vidq.field      = V4L2_FIELD_NONE;
-	   dev->width              = tvd_fmt.width;
-	   dev->height             = tvd_fmt.height;
+	   dev->width              = tvd_fmt.sizes[0].width;
+	   dev->height             = tvd_fmt.sizes[0].height;
         }
 
 	format->fmt.pix.width        = dev->width;
@@ -543,7 +564,7 @@ static int vidioc_g_fmt_vid_cap(struct file *file, void *priv,struct v4l2_format
 	format->fmt.pix.sizeimage    = format->fmt.pix.height * format->fmt.pix.bytesperline * dev->fmt->depth / 8;
 	// Sizeimage is usually (width*height*depth)/8 for uncompressed images, but it's different if bytesperline is used since there could be some padding between lines. 
 	
-	printk("CALCULATIONS: %i, %i\n", format->fmt.pix.bytesperline, format->fmt.pix.sizeimage);
+	__dbg("CALCULATIONS: %i, %i\n", format->fmt.pix.bytesperline, format->fmt.pix.sizeimage);
 
 	return 0;
 }
@@ -555,7 +576,8 @@ static int vidioc_s_fmt_vid_cap(struct file *file, void *priv,struct v4l2_format
         int ret = 0;
 	struct tvd_dev *dev = video_drvdata(file);
 	struct videobuf_queue *q = &dev->vb_vidq;
-	struct fmt *fmt;	
+	struct fmt *fmt;
+	
 	if (is_generating(dev)) {
 		__err("%s device busy\n", __func__);
 		return -EBUSY;
@@ -584,15 +606,19 @@ static int vidioc_s_fmt_vid_cap(struct file *file, void *priv,struct v4l2_format
 
         dev->interface = 0;
 
-        if(dev->height==480)
-	    dev->system = 0;//ntsc
+	if(dev->height==480)
+		dev->system = 0;//ntsc
 	else if(dev->height==576)
-            dev->system = 1;//pal
+		dev->system = 1;//pal
+	else
+		return -EINVAL;
 
-        if(dev->width==720)
-            dev->format = 0; //non mb 
-        else if(dev->width==704)
-            dev->format = 1;//mb
+	if(dev->width==720)
+		dev->format = 0; //non mb 
+	else if(dev->width==704)
+		dev->format = 1;//mb
+	else
+		return -EINVAL;	
 	
 	dev->row                = 1;
 	dev->column             = 1;
@@ -601,8 +627,8 @@ static int vidioc_s_fmt_vid_cap(struct file *file, void *priv,struct v4l2_format
 	dev->channel_index[2]   = 0;
 	dev->channel_index[3]   = 0;
 
-   	tvd_fmt.width           = dev->width;
-	tvd_fmt.height          = dev->height;
+   	tvd_fmt.sizes[0].width  = dev->width;
+	tvd_fmt.sizes[0].height = dev->height;
 
         TVD_config(dev->interface, dev->system);
 
@@ -676,8 +702,8 @@ static int vidioc_s_fmt_type_private(struct file *file, void *priv,struct v4l2_f
 	dev->vb_vidq.field      = V4L2_FIELD_NONE;
 	dev->width              = dev->row*(dev->format?704:720);
 	dev->height             = dev->column*(dev->system?576:480);
-	tvd_fmt.width           = dev->width;
-	tvd_fmt.height          = dev->height;
+	tvd_fmt.sizes[0].width  = dev->width;
+	tvd_fmt.sizes[0].height = dev->height;
 	dev->fmt                = &tvd_fmt;
 		
 	__inf("interface=%d\n",dev->interface);
@@ -1002,6 +1028,7 @@ static int vidioc_s_parm(struct file *file, void *priv,struct v4l2_streamparm *p
 static const struct v4l2_ioctl_ops ioctl_ops = {
 	.vidioc_querycap                = vidioc_querycap,
 	.vidioc_enum_fmt_vid_cap        = vidioc_enum_fmt_vid_cap,
+	.vidioc_enum_framesizes		= vidioc_enum_framesizes,
 	.vidioc_g_fmt_vid_cap           = vidioc_g_fmt_vid_cap,
 	.vidioc_try_fmt_vid_cap         = vidioc_try_fmt_vid_cap,
 	.vidioc_s_fmt_vid_cap           = vidioc_s_fmt_vid_cap, 
@@ -1051,7 +1078,7 @@ static int buffer_setup(struct videobuf_queue *vq, unsigned int *count, unsigned
 			break;
 	}
 	
-	printk("RZ SET SIZE TO %i\n", *size);
+ 	__dbg("RZ SET SIZE TO %i\n", *size);
 	dev->frame_size = *size;
 	
 	if (*count < 3) {

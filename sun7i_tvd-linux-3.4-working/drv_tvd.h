@@ -61,137 +61,47 @@ typedef enum
         TVD_COLOR_SET,
 }tvd_param_t;
 
+
+struct frmsize {
+	__u32 width;
+	__u32 height;
+};
+
 struct fmt {
         u8              name[32];
         __u32           fourcc;          /* v4l2 format id */
         tvd_fmt_t       output_fmt;	
         int   	        depth;
-        __u32           width;
-        __u32           height;
+	int		sizes_cnt;
+	struct frmsize	sizes[8];
 };
 
 static struct fmt tvd_fmt = {
-        .name           = "planar YUV420",
+        .name           = "planar YUV420 - NV12",
         .fourcc   	= V4L2_PIX_FMT_NV12,
         .output_fmt	= TVD_PL_YUV420,
         .depth    	= 12,
-        .width          = 720,//may be change
-        .height         = 480,//may be change
+	.sizes_cnt	= 1,
+	.sizes		= {{720, 576}}
 };
 
 static struct fmt formats[] = {
 	{
-		.name           = "planar YUV420",
+		.name           = "planar YUV420 - NV12",
 		.fourcc   	= V4L2_PIX_FMT_NV12,
 		.output_fmt	= TVD_PL_YUV420,
 		.depth    	= 12,
-		.width          = 720,
-		.height         = 480,
+		.sizes_cnt	= 4,
+		.sizes		= {{720, 480}, {720, 576}, {704, 480}, {704, 576}}
 	},
 	{
-		.name     	= "planar YUV420",
-		.fourcc   	= V4L2_PIX_FMT_NV12,
-		.output_fmt	= TVD_PL_YUV420,
-		.depth    	= 12,
-		.width          = 720,
-		.height         = 960,
-	},
-	{
-		.name     	= "planar YUV420",
-		.fourcc   	= V4L2_PIX_FMT_NV12,
-		.output_fmt	= TVD_PL_YUV420,
-		.depth    	= 12,
-		.width          = 720,
-		.height         = 1920,
-	},
-	{
-		.name     	= "planar YUV420",
-		.fourcc   	= V4L2_PIX_FMT_NV12,
-		.output_fmt	= TVD_PL_YUV420,
-		.depth    	= 12,
-		.width          = 1440,
-		.height         = 480,
-	},
-	{
-		.name     	= "planar YUV420",
-		.fourcc   	= V4L2_PIX_FMT_NV12,
-		.output_fmt	= TVD_PL_YUV420,
-		.depth    	= 12,
-		.width          = 2880,
-		.height         = 480,
-	},
-	{
-		.name     	= "planar YUV420",
-		.fourcc   	= V4L2_PIX_FMT_NV12,
-		.output_fmt	= TVD_PL_YUV420,
-		.depth    	= 12,
-		.width          = 1440,
-		.height         = 960,
-	},
-	{
-		.name     	= "planar YUV420",
-		.fourcc   	= V4L2_PIX_FMT_NV12,
-		.output_fmt	= TVD_PL_YUV420,
-		.depth          = 12,
-		.width          = 720,
-		.height         = 576,
-	},
-	{
-		.name     	= "planar YUV420",
+		.name           = "planar YUV420 - NV21",
 		.fourcc   	= V4L2_PIX_FMT_NV21,
 		.output_fmt	= TVD_PL_YUV420,
 		.depth    	= 12,
-		.width          = 720,
-		.height         = 480,
-	},
-	{
-		.name     	= "planar YUV420",
-		.fourcc   	= V4L2_PIX_FMT_NV21,
-		.output_fmt	= TVD_PL_YUV420,
-		.depth    	= 12,
-		.width          = 720,
-		.height         = 960,
-	},
-	{
-		.name     	= "planar YUV420",
-		.fourcc   	= V4L2_PIX_FMT_NV21,
-		.output_fmt	= TVD_PL_YUV420,
-		.depth    	= 12,
-		.width          = 720,
-		.height         = 1920,
-	},
-	{
-		.name     	= "planar YUV420",
-		.fourcc   	= V4L2_PIX_FMT_NV21,
-		.output_fmt	= TVD_PL_YUV420,
-		.depth          = 12,
-		.width          = 1440,
-		.height         = 480,
-	},
-	{
-		.name     	= "planar YUV420",
-		.fourcc   	= V4L2_PIX_FMT_NV21,
-		.output_fmt	= TVD_PL_YUV420,
-		.depth    	= 12,
-		.width          = 2880,
-		.height         = 480,
-	},
-	{
-		.name     	= "planar YUV420",
-		.fourcc   	= V4L2_PIX_FMT_NV21,
-		.output_fmt	= TVD_PL_YUV420,
-		.depth    	= 12,
-		.width          = 1440,
-		.height         = 960,
-	},
-	{
-		.name     	= "planar YUV420",
-		.fourcc   	= V4L2_PIX_FMT_NV21,
-		.output_fmt	= TVD_PL_YUV420,
-		.depth    	= 12,
-		.width          = 720,
-		.height         = 576,
-	},
+		.sizes_cnt	= 4,
+		.sizes		= {{720, 480}, {720, 576}, {704, 480}, {704, 576}}
+	}
 };
 
 /* buffer for one video frame */
