@@ -39,15 +39,12 @@
 #define TVD_VERSION KERNEL_VERSION(TVD_MAJOR_VERSION, TVD_MINOR_VERSION, TVD_RELEASE)
 #define TVD_MODULE_NAME "tvd"
 
-#define NUM_INPUTS 2
-
 #define MIN_WIDTH  (32)
 #define MIN_HEIGHT (32)
 #define MAX_WIDTH  (4096)
 #define MAX_HEIGHT (4096)
 #define MAX_BUFFER (32*1024*1024)
 
-//#define USE_DMA_CONTIG
 
 #define BLINK_DELAY   HZ/2
 
@@ -65,6 +62,8 @@ typedef enum
 struct frmsize {
 	__u32 width;
 	__u32 height;
+	int rows;
+	int cols;
 };
 
 struct fmt {
@@ -72,36 +71,14 @@ struct fmt {
         __u32           fourcc;          /* v4l2 format id */
         tvd_fmt_t       output_fmt;	
         int   	        depth;
-	int		sizes_cnt;
-	struct frmsize	sizes[8];
 };
 
-static struct fmt tvd_fmt = {
-        .name           = "planar YUV420 - NV12",
-        .fourcc   	= V4L2_PIX_FMT_NV12,
-        .output_fmt	= TVD_PL_YUV420,
-        .depth    	= 12,
-	.sizes_cnt	= 1,
-	.sizes		= {{720, 576}}
-};
-
-static struct fmt formats[] = {
-	{
-		.name           = "planar YUV420 - NV12",
-		.fourcc   	= V4L2_PIX_FMT_NV12,
-		.output_fmt	= TVD_PL_YUV420,
-		.depth    	= 12,
-		.sizes_cnt	= 4,
-		.sizes		= {{720, 480}, {720, 576}, {704, 480}, {704, 576}}
-	},
-	{
-		.name           = "planar YUV420 - NV21",
-		.fourcc   	= V4L2_PIX_FMT_NV21,
-		.output_fmt	= TVD_PL_YUV420,
-		.depth    	= 12,
-		.sizes_cnt	= 4,
-		.sizes		= {{720, 480}, {720, 576}, {704, 480}, {704, 576}}
-	}
+struct input_cnf {
+	int             channels_num;    /* number of input channels used: 1, 2 or 4 */
+	char            *name;           /* string with the input name */
+	int             frmsizes_cnt;    /* number of framesizes available for this input */
+	struct frmsize  *frmsizes;       /* framesizes available for this input */
+	int             channel_idx[4];  /* indexes of channels: enabled/disabled channels and order */
 };
 
 /* buffer for one video frame */

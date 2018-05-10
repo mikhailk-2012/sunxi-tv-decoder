@@ -52,6 +52,114 @@
 #endif
 
 
+#define NUM_INPUTS  ARRAY_SIZE(inputs)
+#define NUM_FMTS    ARRAY_SIZE(formats)
+
+
+static struct frmsize frmsizes_1_channel[] = {{720, 480, 1, 1}, {720, 576, 1, 1}, {704, 480, 1, 1}, {704, 576, 1, 1}};
+static struct frmsize frmsizes_2_channels[] = {{720, 960, 2, 1}, {1440, 480, 1, 2}, {720, 1152, 2, 1}, {1440, 576, 1, 2}, {704, 960, 2, 1}, {1408, 480, 1, 2}, {704, 1152, 2, 1}, {1408, 576, 1, 2}};
+static struct frmsize frmsizes_4_channels[] = {{1440, 960, 2, 2}, {1440, 1152, 2, 2}, {1408, 960, 2, 2}, {1408, 1152, 2, 2}};
+
+static struct fmt formats[] = {
+	{
+		.name         = "planar YUV420 - NV12",
+		.fourcc       = V4L2_PIX_FMT_NV12,
+		.output_fmt   = TVD_PL_YUV420,
+		.depth        = 12
+	},
+	{
+		.name         = "planar YUV420 - NV21",
+		.fourcc       = V4L2_PIX_FMT_NV21,
+		.output_fmt   = TVD_PL_YUV420,
+		.depth        = 12
+	}
+};
+
+static struct input_cnf inputs[] = {
+	{
+		.channels_num = 1,
+		.name         = "TV input 1",
+		.frmsizes_cnt = ARRAY_SIZE(frmsizes_1_channel),
+		.frmsizes     = frmsizes_1_channel,
+		.channel_idx  = {1, 0, 0, 0}
+	},
+	{
+		.channels_num = 1,
+		.name         = "TV input 2",
+		.frmsizes_cnt = ARRAY_SIZE(frmsizes_1_channel),
+		.frmsizes     = frmsizes_1_channel,
+		.channel_idx  = {0, 1, 0, 0}
+	},
+	{
+		.channels_num = 1,
+		.name         = "TV input 3",
+		.frmsizes_cnt = ARRAY_SIZE(frmsizes_1_channel),
+		.frmsizes     = frmsizes_1_channel,
+		.channel_idx  = {0, 0, 1, 0}
+	},
+	{
+		.channels_num = 1,
+		.name         = "TV input 4",
+		.frmsizes_cnt = ARRAY_SIZE(frmsizes_1_channel),
+		.frmsizes     = frmsizes_1_channel,
+		.channel_idx  = {0, 0, 0, 1}
+	},
+	{
+		.channels_num = 2,
+		.name         = "TV inputs 1 + 2",
+		.frmsizes_cnt = ARRAY_SIZE(frmsizes_2_channels),
+		.frmsizes     = frmsizes_2_channels,
+		.channel_idx  = {1, 2, 0, 0}
+	},
+	{
+		.channels_num = 2,
+		.name         = "TV inputs 1 + 3",
+		.frmsizes_cnt = ARRAY_SIZE(frmsizes_2_channels),
+		.frmsizes     = frmsizes_2_channels,
+		.channel_idx  = {1, 0, 2, 0}
+	},
+	{
+		.channels_num = 2,
+		.name         = "TV inputs 1 + 4",
+		.frmsizes_cnt = ARRAY_SIZE(frmsizes_2_channels),
+		.frmsizes     = frmsizes_2_channels,
+		.channel_idx  = {1, 0, 0, 2}
+	},
+	{
+		.channels_num = 2,
+		.name         = "TV inputs 2 + 3",
+		.frmsizes_cnt = ARRAY_SIZE(frmsizes_2_channels),
+		.frmsizes     = frmsizes_2_channels,
+		.channel_idx  = {0, 1, 2, 0}
+	},
+	{
+		.channels_num = 2,
+		.name         = "TV inputs 2 + 4",
+		.frmsizes_cnt = ARRAY_SIZE(frmsizes_2_channels),
+		.frmsizes     = frmsizes_2_channels,
+		.channel_idx  = {0, 1, 0, 2}
+	},
+	{
+		.channels_num = 2,
+		.name         = "TV inputs 3 + 4",
+		.frmsizes_cnt = ARRAY_SIZE(frmsizes_2_channels),
+		.frmsizes     = frmsizes_2_channels,
+		.channel_idx  = {0, 0, 1, 2}
+	},
+	{
+		.channels_num = 4,
+		.name         = "TV inputs 1 + 2 + 3 + 4",
+		.frmsizes_cnt = ARRAY_SIZE(frmsizes_4_channels),
+		.frmsizes     = frmsizes_4_channels,
+		.channel_idx  = {1, 2, 3, 4}
+	}
+};
+
+
+
+static int tvd_clk_init(struct tvd_dev *dev,int interface);
+
+
 static int is_generating(struct tvd_dev *dev)
 {
 	return test_bit(0, &dev->generating);
@@ -70,24 +178,25 @@ static void stop_generating(struct tvd_dev *dev)
 	 return;
 }
 
-static struct fmt * get_format(struct v4l2_format *format)
+static struct frmsize * get_frmsize (int input, int width, int height)
 {
-	struct fmt *fmt;
-	unsigned int i, k;
-
-	for (k = 0; k < ARRAY_SIZE(formats); k++) {
-		fmt = &formats[k];
-		if (fmt->fourcc == format->fmt.pix.pixelformat) {
-			for (i = 0; i < fmt->sizes_cnt; i++) {
-				if (fmt->sizes[i].width == format->fmt.pix.width && fmt->sizes[i].height == format->fmt.pix.height) {
-					__dbg("%s: fmt->fourcc = %d, fmt->width=%d, fmt->height = %d\n", __FUNCTION__, fmt->fourcc, fmt->width, fmt->height); 	
-					return fmt;
-				}
-			}
-		}
-	}
+	unsigned int i;
 	
-	__dbg("%s: invalid format (fmt=%d, width=%d, height=%d\n", __FUNCTION__, format->fmt.pix.pixelformat, format->fmt.pix.width, format->fmt.pix.height);
+	for (i = 0; i < inputs[input].frmsizes_cnt; i++) {
+		if (inputs[input].frmsizes[i].width == width && inputs[input].frmsizes[i].height == height)
+			return &inputs[input].frmsizes[i];
+	}
+	return NULL;
+}
+
+static struct fmt * get_format(__u32 fourcc)
+{
+	unsigned int i;
+
+	for (i = 0; i < NUM_FMTS; i++) {
+		if (formats[i].fourcc == fourcc)
+			return &formats[i];
+	}
 	return NULL;
 };
 
@@ -112,6 +221,46 @@ static inline void set_addr(struct tvd_dev *dev,struct buffer *buffer)
 	}
 	__dbg("buf_addr_y=%x\n",  dev->buf_addr.y);
 	__dbg("buf_addr_cb=%x\n", dev->buf_addr.c);
+}
+
+static int apply_format (struct tvd_dev *dev)
+{
+	int i;
+	
+	__inf("interface=%d\n",dev->interface);
+	__inf("system=%d\n",dev->system);
+	__inf("format=%d\n",dev->format);
+	__inf("row=%d\n",dev->row);
+	__inf("column=%d\n",dev->column);
+	__inf("channel_index[0]=%d\n",dev->channel_index[0]);
+	__inf("channel_index[1]=%d\n",dev->channel_index[1]);
+	__inf("channel_index[2]=%d\n",dev->channel_index[2]);
+	__inf("channel_index[3]=%d\n",dev->channel_index[3]);
+	__inf("width=%d\n",dev->width);
+	__inf("height=%d\n",dev->height);
+	
+	TVD_config(dev->interface, dev->system);
+	for (i = 0; i < 4; i++) {
+		if (dev->channel_index[i]) {
+			TVD_set_fmt(i, dev->format ? TVD_MB_YUV420 : TVD_PL_YUV420);
+			TVD_set_width(i, (dev->format ? 704 : 720));
+			if (dev->interface == 2)
+				TVD_set_height(i, (dev->system ? 576 : 480));
+			else
+				TVD_set_height(i, (dev->system ? 576 : 480) / 2);
+			TVD_set_width_jump(i, (dev->format ? 704 : 720) * dev->column);
+			dev->channel_offset_y[i] = ((dev->channel_index[i]-1)%dev->column)*(dev->format?704:720) + ((dev->channel_index[i]-1)/dev->column)*dev->column*(dev->format?704:720)*(dev->system?576:480);
+			dev->channel_offset_c[i] = ((dev->channel_index[i]-1)%dev->column)*(dev->format?704:720) + ((dev->channel_index[i]-1)/dev->column)*dev->column*(dev->format?704:720)*(dev->system?576:480)/2;
+			__inf("channel_offset_y[%d]=%d\n", i, dev->channel_offset_y[i]);
+			__inf("channel_offset_c[%d]=%d\n", i, dev->channel_offset_c[i]);
+		}
+	}
+	
+	if (tvd_clk_init(dev,dev->interface)) {
+		__err("clock init fail!\n");
+	}
+	
+	return 0;
 }
 
 static irqreturn_t tvd_irq(int irq, void *priv)
@@ -404,7 +553,7 @@ static int tvd_open(struct file *file)
 	tvd_clk_open(dev);
 
 	TVD_init(dev->regs);
-	dev->input=0;//default input
+	
 	dev->opened=1;
 	
 	return ret;		
@@ -474,9 +623,9 @@ static int vidioc_enum_fmt_vid_cap(struct file *file, void  *priv,struct v4l2_fm
 
 	__dbg("%s\n", __FUNCTION__);
 
-	if (format->index > ARRAY_SIZE(formats)-1) {
+	if (format->index > NUM_FMTS - 1)
 		return -EINVAL;
-	}	
+	
 	fmt = &formats[format->index];
 
 	strlcpy(format->description, fmt->name, sizeof(format->description));
@@ -487,24 +636,21 @@ static int vidioc_enum_fmt_vid_cap(struct file *file, void  *priv,struct v4l2_fm
 
 static int vidioc_enum_framesizes (struct file *file, void *priv, struct v4l2_frmsizeenum *frmsize)
 {
-	int i;
+	struct frmsize *fsz;
+	struct tvd_dev *dev = video_drvdata(file);
 	
 	__dbg("%s: idx=%d, format=%d\n", __FUNCTION__, frmsize->index, frmsize->pixel_format);
 	
-	for (i = 0; i < ARRAY_SIZE(formats); i++) {
-		if (frmsize->pixel_format == formats[i].fourcc) {
-			if (frmsize->index < formats[i].sizes_cnt) {
-				frmsize->type = V4L2_FRMSIZE_TYPE_DISCRETE;
-				frmsize->discrete.width = formats[i].sizes[frmsize->index].width;
-				frmsize->discrete.height = formats[i].sizes[frmsize->index].height;
-				return  0;
-			}
-			else {
-				return -EINVAL;
-			}
-		}
-	}
-	return -EINVAL;
+	if (frmsize->index > inputs[dev->input].frmsizes_cnt - 1)
+		return -EINVAL;
+	
+	fsz = &inputs[dev->input].frmsizes[frmsize->index];
+	
+	frmsize->type = V4L2_FRMSIZE_TYPE_DISCRETE;
+	frmsize->discrete.width = fsz->width;
+	frmsize->discrete.height = fsz->height;
+	
+	return 0;
 }
 
 static int vidioc_try_fmt_vid_cap(struct file *file, void *priv,struct v4l2_format *format)
@@ -546,22 +692,13 @@ static int vidioc_g_fmt_vid_cap(struct file *file, void *priv,struct v4l2_format
 
 	__dbg("%s\n", __FUNCTION__);
 
-        // if the first time called....
-	if( !dev->fmt )
-	{
-	   __inf("%s: this is not set yet: %d, %d\n", __FUNCTION__, dev->width, dev->height );
-	   dev->fmt                = &tvd_fmt;
-	   dev->vb_vidq.field      = V4L2_FIELD_NONE;
-	   dev->width              = tvd_fmt.sizes[0].width;
-	   dev->height             = tvd_fmt.sizes[0].height;
-        }
-
 	format->fmt.pix.width        = dev->width;
 	format->fmt.pix.height       = dev->height;
 	format->fmt.pix.field        = dev->vb_vidq.field;
 	format->fmt.pix.pixelformat  = dev->fmt->fourcc;
-	format->fmt.pix.bytesperline = format->fmt.pix.width;
-	format->fmt.pix.sizeimage    = format->fmt.pix.height * format->fmt.pix.bytesperline * dev->fmt->depth / 8;
+	format->fmt.pix.bytesperline = dev->width;
+	format->fmt.pix.sizeimage    = dev->width * dev->height * dev->fmt->depth / 8; 
+	// Bytesperline is the "sprite". In YUV frames sprite = width of Y layer + padding (in our case padding = 0). UV layer width is calculated according to this one.
 	// Sizeimage is usually (width*height*depth)/8 for uncompressed images, but it's different if bytesperline is used since there could be some padding between lines. 
 	
 	__dbg("CALCULATIONS: %i, %i\n", format->fmt.pix.bytesperline, format->fmt.pix.sizeimage);
@@ -577,6 +714,7 @@ static int vidioc_s_fmt_vid_cap(struct file *file, void *priv,struct v4l2_format
 	struct tvd_dev *dev = video_drvdata(file);
 	struct videobuf_queue *q = &dev->vb_vidq;
 	struct fmt *fmt;
+	struct frmsize *frmsize;
 	
 	if (is_generating(dev)) {
 		__err("%s device busy\n", __func__);
@@ -590,60 +728,32 @@ static int vidioc_s_fmt_vid_cap(struct file *file, void *priv,struct v4l2_format
 		__err("try format failed!\n");
 		goto out;
 	}
-		
-	fmt = get_format(format);
-	if (!fmt) {
-		__err("Fourcc format (0x%08x) invalid.\n",format->fmt.pix.pixelformat);
-		ret	= -EINVAL;
+	
+	// check format and framesize
+	fmt = get_format(format->fmt.pix.pixelformat);
+	frmsize = get_frmsize(dev->input, format->fmt.pix.width, format->fmt.pix.height);
+	if (!fmt || !frmsize) {
+		__err("%s: invalid format: fmt=%d, width=%d, height=%d\n", __FUNCTION__, format->fmt.pix.pixelformat, format->fmt.pix.width, format->fmt.pix.height);
+		ret = -EINVAL;
 		goto out;
 	}
 		
 	//save the current format info
-	dev->fmt                = fmt;
-	dev->vb_vidq.field      = V4L2_FIELD_NONE; //format->fmt.pix.field;
-	dev->width              = format->fmt.pix.width;
-	dev->height             = format->fmt.pix.height;
-
-        dev->interface = 0;
-
-	if(dev->height==480)
-		dev->system = 0;//ntsc
-	else if(dev->height==576)
-		dev->system = 1;//pal
-	else
-		return -EINVAL;
-
-	if(dev->width==720)
-		dev->format = 0; //non mb 
-	else if(dev->width==704)
-		dev->format = 1;//mb
-	else
-		return -EINVAL;	
+	dev->fmt              = fmt;
+	dev->vb_vidq.field    = V4L2_FIELD_NONE;
+	dev->interface        = 0;
+	dev->width            = frmsize->width;
+	dev->height           = frmsize->height;
+	dev->row              = frmsize->rows;
+	dev->column           = frmsize->cols;
+	dev->system           = dev->height / dev->row == 480 ? 0 : 1; // 0 = ntcs, 1 = pal
+	dev->format           = dev->width / dev->column == 720 ? 0 : 1; // 0 = non mb, 1 = mb
+	dev->channel_index[0] = inputs[dev->input].channel_idx[0];
+	dev->channel_index[1] = inputs[dev->input].channel_idx[1];
+	dev->channel_index[2] = inputs[dev->input].channel_idx[2];
+	dev->channel_index[3] = inputs[dev->input].channel_idx[3];
 	
-	dev->row                = 1;
-	dev->column             = 1;
-	dev->channel_index[0]   = 1;
-	dev->channel_index[1]   = 0;
-	dev->channel_index[2]   = 0;
-	dev->channel_index[3]   = 0;
-
-   	tvd_fmt.sizes[0].width  = dev->width;
-	tvd_fmt.sizes[0].height = dev->height;
-
-        TVD_config(dev->interface, dev->system);
-
-	TVD_set_width(0,format->fmt.pix.width);
-	TVD_set_width_jump(0,format->fmt.pix.width);
-	TVD_set_height(0,format->fmt.pix.height/2);//for interlace here set half of heigh       
-	TVD_set_fmt(0, TVD_PL_YUV420 );
-    
-        dev->channel_offset_y[0] = 0;
-        dev->channel_offset_c[0] = 0;
-
-	if (tvd_clk_init(dev,dev->interface)) 
-	{
-	  __err("clock init fail!\n");
-	}
+	ret = apply_format(dev);
 	
 out:
 	vidioc_g_fmt_vid_cap(file, priv, format); // return current fmt
@@ -658,7 +768,7 @@ static int vidioc_g_fmt_type_private(struct file *file, void *priv,struct v4l2_f
 	struct tvd_dev *dev = video_drvdata(file);
 	int i;
 
-	//__dbg("%s\n", __FUNCTION__);
+	__dbg("%s\n", __FUNCTION__);
 	
 	format->fmt.raw_data[0]  = dev->interface       ;
 	format->fmt.raw_data[1]  = dev->system          ;
@@ -680,7 +790,6 @@ static int vidioc_g_fmt_type_private(struct file *file, void *priv,struct v4l2_f
 static int vidioc_s_fmt_type_private(struct file *file, void *priv,struct v4l2_format *format)
 {
 	struct tvd_dev *dev = video_drvdata(file);
-	__u32 i; 
 
 	__dbg("%s\n", __FUNCTION__);
 	
@@ -698,49 +807,12 @@ static int vidioc_s_fmt_type_private(struct file *file, void *priv,struct v4l2_f
 	dev->channel_index[1]   = format->fmt.raw_data[11];
 	dev->channel_index[2]   = format->fmt.raw_data[12];
 	dev->channel_index[3]   = format->fmt.raw_data[13];
-
 	dev->vb_vidq.field      = V4L2_FIELD_NONE;
-	dev->width              = dev->row*(dev->format?704:720);
-	dev->height             = dev->column*(dev->system?576:480);
-	tvd_fmt.sizes[0].width  = dev->width;
-	tvd_fmt.sizes[0].height = dev->height;
-	dev->fmt                = &tvd_fmt;
-		
-	__inf("interface=%d\n",dev->interface);
-	__inf("system=%d\n",dev->system);
-	__inf("format=%d\n",dev->format);
-	__inf("row=%d\n",dev->row);
-	__inf("column=%d\n",dev->column);
-	__inf("channel_index[0]=%d\n",dev->channel_index[0]);
-	__inf("channel_index[1]=%d\n",dev->channel_index[1]);
-	__inf("channel_index[2]=%d\n",dev->channel_index[2]);
-	__inf("channel_index[3]=%d\n",dev->channel_index[3]);
-	__inf("width=%d\n",dev->width);
-	__inf("height=%d\n",dev->height);
-	
-	TVD_config(dev->interface, dev->system);
-	for(i=0;i<4;i++){
-		if(dev->channel_index[i]){
-			TVD_set_fmt(i, dev->format?TVD_MB_YUV420:TVD_PL_YUV420);
-			TVD_set_width(i, (dev->format?704:720));
-			if(dev->interface==2)
-				TVD_set_height(i, (dev->system?576:480));
-			else
-				TVD_set_height(i, (dev->system?576:480)/2);
-			TVD_set_width_jump(i, (dev->format?704:720)*dev->row);
-			dev->channel_offset_y[i] = ((dev->channel_index[i]-1)%dev->row)*(dev->format?704:720) + ((dev->channel_index[i]-1)/dev->row)*dev->row*(dev->format?704:720)*(dev->system?576:480);
-			dev->channel_offset_c[i] = ((dev->channel_index[i]-1)%dev->row)*(dev->format?704:720) + ((dev->channel_index[i]-1)/dev->row)*dev->row*(dev->format?704:720)*(dev->system?576:480)/2;
-			__inf("channel_offset_y[%d]=%d\n", i, dev->channel_offset_y[i]);
-			__inf("channel_offset_c[%d]=%d\n", i, dev->channel_offset_c[i]);
-			
-		}			
-	}
-	
-	if (tvd_clk_init(dev,dev->interface)) 
-	{
-		__err("clock init fail!\n");
-	}
-	return 0;
+	dev->width              = dev->column * (dev->format ? 704 : 720);
+	dev->height             = dev->row * (dev->system ? 576 : 480);
+	dev->fmt                = &formats[0]; // NV12
+
+	return apply_format(dev);
 }
 
 
@@ -903,12 +975,15 @@ static int vidioc_streamoff(struct file *file, void *priv, enum v4l2_buf_type i)
 static int vidioc_enum_input(struct file *file, void *priv,struct v4l2_input *inp)
 {
 	__dbg("%s\n", __FUNCTION__);
+	
 	if (inp->index > NUM_INPUTS-1) {
 		__err("input index invalid! idx: %d\n", inp->index);
 		return -EINVAL;
 	}
 
 	inp->type = V4L2_INPUT_TYPE_CAMERA;
+	strlcpy(inp->name, inputs[inp->index].name, sizeof(inp->name));
+	// TODO: fill supported standards (PAL, NTCS...)
 	
 	return 0;
 }
@@ -924,16 +999,41 @@ static int vidioc_g_input(struct file *file, void *priv, unsigned int *i)
 
 static int vidioc_s_input(struct file *file, void *priv, unsigned int i)
 {
+	struct frmsize *frmsize;
 	struct tvd_dev *dev = video_drvdata(file);
+	
 	__dbg("%s\n", __FUNCTION__);
 
 	if (i > NUM_INPUTS-1) {
 		__err("set input error!\n");
 		return -EINVAL;
 	}
+	
+	if (is_generating(dev)) {
+		__err("%s device busy\n", __func__);
+		return -EBUSY;
+	}
+	
 	dev->input = i;
 	
-	return 0;
+	// if previous framesize is not available for the new input pick another one
+	frmsize = get_frmsize(i, dev->width, dev->height);
+	if (!frmsize)
+		frmsize = &inputs[i].frmsizes[0];
+	
+	// edit values that may have changed
+	dev->width            = frmsize->width;
+	dev->height           = frmsize->height;
+	dev->row              = frmsize->rows;
+	dev->column           = frmsize->cols;
+	dev->system           = dev->height / dev->row == 480 ? 0 : 1; // 0 = ntcs, 1 = pal
+	dev->format           = dev->width / dev->column == 720 ? 0 : 1; // 0 = non mb, 1 = mb
+	dev->channel_index[0] = inputs[dev->input].channel_idx[0];
+	dev->channel_index[1] = inputs[dev->input].channel_idx[1];
+	dev->channel_index[2] = inputs[dev->input].channel_idx[2];
+	dev->channel_index[3] = inputs[dev->input].channel_idx[3];
+	
+	return apply_format(dev);
 }
 
 static int vidioc_queryctrl(struct file *file, void *priv,struct v4l2_queryctrl *qc)
@@ -1028,7 +1128,7 @@ static int vidioc_s_parm(struct file *file, void *priv,struct v4l2_streamparm *p
 static const struct v4l2_ioctl_ops ioctl_ops = {
 	.vidioc_querycap                = vidioc_querycap,
 	.vidioc_enum_fmt_vid_cap        = vidioc_enum_fmt_vid_cap,
-	.vidioc_enum_framesizes		= vidioc_enum_framesizes,
+	.vidioc_enum_framesizes         = vidioc_enum_framesizes,
 	.vidioc_g_fmt_vid_cap           = vidioc_g_fmt_vid_cap,
 	.vidioc_try_fmt_vid_cap         = vidioc_try_fmt_vid_cap,
 	.vidioc_s_fmt_vid_cap           = vidioc_s_fmt_vid_cap, 
@@ -1046,8 +1146,8 @@ static const struct v4l2_ioctl_ops ioctl_ops = {
 	.vidioc_queryctrl               = vidioc_queryctrl,
 	.vidioc_g_ctrl                  = vidioc_g_ctrl,
 	.vidioc_s_ctrl                  = vidioc_s_ctrl,
-	.vidioc_g_parm		        = vidioc_g_parm,
-	.vidioc_s_parm		        = vidioc_s_parm,
+	.vidioc_g_parm                  = vidioc_g_parm,
+	.vidioc_s_parm                  = vidioc_s_parm,
 #ifdef CONFIG_VIDEO_V4L1_COMPAT
 	.vidiocgmbuf                    = vidiocgmbuf,
 #endif
@@ -1102,9 +1202,7 @@ static void free_buffer(struct videobuf_queue *vq, struct buffer *buf)
 	__dbg("%s\n", __FUNCTION__);
 	__dbg("%s, state: %i\n", __func__, buf->vb.state);
 
-#ifdef USE_DMA_CONTIG	
 	videobuf_dma_contig_free(vq, &buf->vb);
-#endif
 	
 	__dbg("free_buffer: freed\n");
 	
@@ -1164,6 +1262,8 @@ static void buffer_queue(struct videobuf_queue *vq, struct videobuf_buffer *vb)
 
 	__dbg("%s: buffer %d\n", __FUNCTION__, vb->i);
 	buf->vb.state = VIDEOBUF_QUEUED;
+/////	if (list_empty(&vidq->active))
+/////		set_addr(dev, buf);
 	list_add_tail(&buf->vb.queue, &vidq->active);
 }
 
@@ -1241,7 +1341,7 @@ static int tvd_probe(struct platform_device *pdev)
 		goto err_clk;
 	}
 	
-    /* v4l2 device register */
+	/* v4l2 device register */
 	ret = v4l2_device_register(&pdev->dev, &dev->v4l2_dev);	
 	if (ret) {
 		__err("Error registering v4l2 device\n");
@@ -1295,6 +1395,24 @@ static int tvd_probe(struct platform_device *pdev)
 	INIT_LIST_HEAD(&dev->vidq.active);
 	//init_waitqueue_head(&dev->vidq.wq);
 	
+	
+	/* set default input & format */
+	dev->input            = 0;
+	dev->fmt              = &formats[0];
+	dev->vb_vidq.field    = V4L2_FIELD_NONE;
+	dev->interface        = 0;
+	dev->width            = inputs[dev->input].frmsizes[0].width;
+	dev->height           = inputs[dev->input].frmsizes[0].height;
+	dev->row              = inputs[dev->input].frmsizes[0].rows;
+	dev->column           = inputs[dev->input].frmsizes[0].cols;
+	dev->system           = dev->height / dev->row == 480 ? 0 : 1; // 0 = ntcs, 1 = pal
+	dev->format           = dev->width / dev->column == 720 ? 0 : 1; // 0 = non mb, 1 = mb
+	dev->channel_index[0] = inputs[dev->input].channel_idx[0];
+	dev->channel_index[1] = inputs[dev->input].channel_idx[1];
+	dev->channel_index[2] = inputs[dev->input].channel_idx[2];
+	dev->channel_index[3] = inputs[dev->input].channel_idx[3];
+	ret = apply_format(dev);
+
 	return 0;
 
 rel_vdev:
@@ -1408,7 +1526,7 @@ static struct resource tvd_resource[2] = {
 
 static struct platform_device tvd_device = {
 	.name           	= "tvd",
-        .id             	= -1,//??
+        .id             	= -1, // FIXME
 	.num_resources		= ARRAY_SIZE(tvd_resource),
         .resource       	= tvd_resource,
         //.coherent_dma_mask = DMA_BIT_MASK(32),
