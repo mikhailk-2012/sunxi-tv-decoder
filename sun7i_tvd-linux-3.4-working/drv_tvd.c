@@ -285,7 +285,6 @@ static irqreturn_t tvd_irq(int irq, void *priv)
 	/* Nobody is waiting on this buffer*/
 	if (!waitqueue_active(&buf->vb.done)) {
 		__dbg("Nobody is waiting on this buffer,buf = 0x%p (buffer %d)\n", buf, buf->vb.i);
-		goto unlock; // skip this frame data, don't dequeue buffer and overwrite it with next frame data
 	}
 	
 	list_del(&buf->vb.queue);
@@ -1262,8 +1261,8 @@ static void buffer_queue(struct videobuf_queue *vq, struct videobuf_buffer *vb)
 
 	__dbg("%s: buffer %d\n", __FUNCTION__, vb->i);
 	buf->vb.state = VIDEOBUF_QUEUED;
-/////	if (list_empty(&vidq->active))
-/////		set_addr(dev, buf);
+	if (list_empty(&vidq->active))
+		set_addr(dev, buf);
 	list_add_tail(&buf->vb.queue, &vidq->active);
 }
 
