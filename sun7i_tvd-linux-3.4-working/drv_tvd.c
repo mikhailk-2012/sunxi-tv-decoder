@@ -275,6 +275,11 @@ static irqreturn_t tvd_irq(int irq, void *priv)
 		goto set_next_addr;
 	}
 	
+	if (jiffies - dev->jiffies < dev->frameival_jiffies) {
+		__dbg("Skipped frame due to selected frame interval\n");
+		goto unlock;
+	}
+	
 	if (list_empty(&dma_q->active)) {
 		__err("No active queue to serve\n");
 		goto unlock;
@@ -1084,14 +1089,20 @@ static int vidioc_s_ctrl(struct file *file, void *priv,struct v4l2_control *ctrl
 
 static int vidioc_g_parm(struct file *file, void *priv,struct v4l2_streamparm *parms) 
 {
-        int ret=0;       
-	struct tvd_dev *dev = video_drvdata(file);	
-        if(parms->type==V4L2_BUF_TYPE_VIDEO_CAPTURE)
-        {
-                parms->parm.capture.timeperframe.numerator=dev->fps.numerator;
-                parms->parm.capture.timeperframe.denominator=dev->fps.denominator;
-        	__dbg("%s\n", __FUNCTION__);	
-        }
+	int ret = 0;       
+	struct tvd_dev *dev = video_drvdata(file);
+	
+	__dbg("%s: type=%d\n", __FUNCTION__, parms->type);
+	
+	if (parms->type == V4L2_BUF_TYPE_VIDEO_CAPTURE)
+	{
+		parms->parm.capture.capability = V4L2_CAP_TIMEPERFRAME;
+		parms->parm.capture.capturemode = 0;
+		parms->parm.capture.timeperframe.numerator = dev->frameival_secs.numerator;
+		parms->parm.capture.timeperframe.denominator = dev->frameival_secs.denominator;
+		parms->parm.capture.extendedmode = 0;
+		// TODO: parms->parm.capture.readbuffers = ?; see https://linuxtv.org/downloads/v4l-dvb-apis/uapi/v4l/vidioc-g-parm.html
+	}
 	return ret;
 }
 
@@ -1099,29 +1110,74 @@ static int vidioc_s_parm(struct file *file, void *priv,struct v4l2_streamparm *p
 {
 	struct tvd_dev *dev = video_drvdata(file);
 	int ret=0;
-        if(parms->type==V4L2_BUF_TYPE_PRIVATE)
-        {
-                if(parms->parm.raw_data[0] == TVD_COLOR_SET)
-                {
-                        dev->luma       = parms->parm.raw_data[1];
-                        dev->contrast   = parms->parm.raw_data[2];
-                        dev->saturation = parms->parm.raw_data[3];
-                        dev->hue        = parms->parm.raw_data[4];
-                        TVD_set_color(0,dev->luma,dev->contrast,dev->saturation,dev->hue);
-                }
-                else if(parms->parm.raw_data[0] == TVD_UV_SWAP)
-                {
-                        dev->uv_swap    = parms->parm.raw_data[1];
-                        TVD_uv_swap(dev->uv_swap);
-                }
-        }
-        else if(parms->type==V4L2_BUF_TYPE_VIDEO_CAPTURE)
-        {
-                dev->fps.numerator=parms->parm.capture.timeperframe.numerator;
-                dev->fps.denominator=parms->parm.capture.timeperframe.denominator;
-        }
-	__dbg("%s\n", __FUNCTION__);
+	
+	__dbg("%s: type=%d\n", __FUNCTION__, parms->type);
+	
+	if(parms->type==V4L2_BUF_TYPE_PRIVATE)
+	{
+		if(parms->parm.raw_data[0] == TVD_COLOR_SET)
+		{
+			dev->luma       = parms->parm.raw_data[1];
+			dev->contrast   = parms->parm.raw_data[2];
+			dev->saturation = parms->parm.raw_data[3];
+			dev->hue        = parms->parm.raw_data[4];
+			TVD_set_color(0,dev->luma,dev->contrast,dev->saturation,dev->hue);
+		}
+		else if(parms->parm.raw_data[0] == TVD_UV_SWAP)
+		{
+			dev->uv_swap    = parms->parm.raw_data[1];
+			TVD_uv_swap(dev->uv_swap);
+		}
+	}
+	else if(parms->type==V4L2_BUF_TYPE_VIDEO_CAPTURE)
+	{
+		if (!parms->parm.capture.timeperframe.denominator || !parms->parm.capture.timeperframe.numerator) {
+			dev->frameival_jiffies = 0; // 0 = don't drop frames, pass to applicaton as soon as posible
+			dev->frameival_secs.numerator = 0;
+			dev->frameival_secs.denominator = 0;
+		}
+		else {
+			dev->frameival_secs.numerator = parms->parm.capture.timeperframe.numerator;
+			dev->frameival_secs.denominator = parms->parm.capture.timeperframe.denominator;
+			dev->frameival_jiffies = msecs_to_jiffies(1000 * parms->parm.capture.timeperframe.numerator /
+				parms->parm.capture.timeperframe.denominator);
+		}
+		__dbg("frame interval set to %ul/%ul (interval (jiffies)=%ul)\n", dev->frameival_secs.numerator, dev->frameival_secs.denominator, dev->frameival_jiffies);
+	}
 	return ret;
+}
+
+static int vidioc_enum_frameintervals(struct file *file, void *priv, struct v4l2_frmivalenum *frmivalenum)
+{
+	struct tvd_dev *dev = video_drvdata(file);
+	struct fmt *fmt;
+	struct frmsize *frmsize;
+
+	__dbg("%s\n", __FUNCTION__);
+	
+	/* validate index, format and framesize */
+	if (frmivalenum->index > 0) {
+		__err("%s: invalid idx: idx=%d\n", __FUNCTION__, frmivalenum->index);
+		return -EINVAL;
+	}
+	fmt = get_format(frmivalenum->pixel_format);
+	frmsize = get_frmsize(dev->input, frmivalenum->width, frmivalenum->height);
+	if (!fmt || !frmsize) {
+		__err("%s: invalid format: fmt=%d, width=%d, height=%d\n", __FUNCTION__, frmivalenum->pixel_format, frmivalenum->width, frmivalenum->height);
+		return -EINVAL;
+	}
+	
+	/* Note: framerate is the same for all valid formats and framesizes */
+	/* TODO: consider changing to stepwise, not continuous, depending on selected video standard (PAL or NTSC, which can be obtained from framesize in frmivalenum variable) */
+	frmivalenum->type = V4L2_FRMIVAL_TYPE_CONTINUOUS;
+	frmivalenum->stepwise.min.numerator = 1;    /* min = NTSC time per frame */
+	frmivalenum->stepwise.min.denominator = 30;
+	frmivalenum->stepwise.max.numerator = 600;  /* max = arbitrary big value */
+	frmivalenum->stepwise.max.denominator = 1;
+	frmivalenum->stepwise.step.numerator = 1;   /* step = 1 for continuous intervals */
+	frmivalenum->stepwise.step.denominator = 1;
+	
+	return 0;
 }
 
 static const struct v4l2_ioctl_ops ioctl_ops = {
@@ -1147,6 +1203,7 @@ static const struct v4l2_ioctl_ops ioctl_ops = {
 	.vidioc_s_ctrl                  = vidioc_s_ctrl,
 	.vidioc_g_parm                  = vidioc_g_parm,
 	.vidioc_s_parm                  = vidioc_s_parm,
+	.vidioc_enum_frameintervals     = vidioc_enum_frameintervals,
 #ifdef CONFIG_VIDEO_V4L1_COMPAT
 	.vidiocgmbuf                    = vidiocgmbuf,
 #endif
@@ -1394,8 +1451,7 @@ static int tvd_probe(struct platform_device *pdev)
 	INIT_LIST_HEAD(&dev->vidq.active);
 	//init_waitqueue_head(&dev->vidq.wq);
 	
-	
-	/* set default input & format */
+	/* set initial config */
 	dev->input            = 0;
 	dev->fmt              = &formats[0];
 	dev->vb_vidq.field    = V4L2_FIELD_NONE;
@@ -1410,6 +1466,10 @@ static int tvd_probe(struct platform_device *pdev)
 	dev->channel_index[1] = inputs[dev->input].channel_idx[1];
 	dev->channel_index[2] = inputs[dev->input].channel_idx[2];
 	dev->channel_index[3] = inputs[dev->input].channel_idx[3];
+	dev->frameival_secs.numerator   = 0;
+	dev->frameival_secs.denominator = 0;
+	dev->frameival_jiffies          = 0;
+	TVD_init(dev->regs);
 	ret = apply_format(dev);
 
 	return 0;

@@ -164,8 +164,10 @@ struct tvd_dev {
         unsigned int            hue;
 
         unsigned int            uv_swap;
-        //fps
-        struct v4l2_fract       fps;
+	
+        // frame interval (to control fps)
+	struct v4l2_fract       frameival_secs;    // selected by user, in seconds (set to 0/X or X/0 to avoid skipping frames)
+	unsigned long           frameival_jiffies; // frame interval converted to jiffies
         
 };
 
