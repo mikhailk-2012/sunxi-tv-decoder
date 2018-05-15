@@ -750,7 +750,7 @@ static int vidioc_s_fmt_vid_cap(struct file *file, void *priv,struct v4l2_format
 	dev->height           = frmsize->height;
 	dev->row              = frmsize->rows;
 	dev->column           = frmsize->cols;
-	dev->system           = dev->height / dev->row == 480 ? 0 : 1; // 0 = ntcs, 1 = pal
+	dev->system           = dev->height / dev->row == 480 ? 0 : 1; // 0 = ntsc, 1 = pal
 	dev->format           = dev->width / dev->column == 720 ? 0 : 1; // 0 = non mb, 1 = mb
 	dev->channel_index[0] = inputs[dev->input].channel_idx[0];
 	dev->channel_index[1] = inputs[dev->input].channel_idx[1];
@@ -987,7 +987,7 @@ static int vidioc_enum_input(struct file *file, void *priv,struct v4l2_input *in
 
 	inp->type = V4L2_INPUT_TYPE_CAMERA;
 	strlcpy(inp->name, inputs[inp->index].name, sizeof(inp->name));
-	// TODO: fill supported standards (PAL, NTCS...)
+	// TODO: fill supported standards (PAL, NTSC...)
 	
 	return 0;
 }
@@ -1030,7 +1030,7 @@ static int vidioc_s_input(struct file *file, void *priv, unsigned int i)
 	dev->height           = frmsize->height;
 	dev->row              = frmsize->rows;
 	dev->column           = frmsize->cols;
-	dev->system           = dev->height / dev->row == 480 ? 0 : 1; // 0 = ntcs, 1 = pal
+	dev->system           = dev->height / dev->row == 480 ? 0 : 1; // 0 = ntsc, 1 = pal
 	dev->format           = dev->width / dev->column == 720 ? 0 : 1; // 0 = non mb, 1 = mb
 	dev->channel_index[0] = inputs[dev->input].channel_idx[0];
 	dev->channel_index[1] = inputs[dev->input].channel_idx[1];
@@ -1460,7 +1460,7 @@ static int tvd_probe(struct platform_device *pdev)
 	dev->height           = inputs[dev->input].frmsizes[0].height;
 	dev->row              = inputs[dev->input].frmsizes[0].rows;
 	dev->column           = inputs[dev->input].frmsizes[0].cols;
-	dev->system           = dev->height / dev->row == 480 ? 0 : 1; // 0 = ntcs, 1 = pal
+	dev->system           = dev->height / dev->row == 480 ? 0 : 1; // 0 = ntsc, 1 = pal
 	dev->format           = dev->width / dev->column == 720 ? 0 : 1; // 0 = non mb, 1 = mb
 	dev->channel_index[0] = inputs[dev->input].channel_idx[0];
 	dev->channel_index[1] = inputs[dev->input].channel_idx[1];
