@@ -18,9 +18,9 @@
 #include <linux/platform_device.h>
 #include <linux/interrupt.h>
 #include <linux/i2c.h>
-#include <media/videobuf-core.h>
+#include <media/videobuf2-core.h>
 #include <media/v4l2-subdev.h>
-#include <media/videobuf-dma-contig.h>
+#include <media/videobuf2-dma-contig.h>
 #include <linux/moduleparam.h>
 //#include <mach/sys_config.h>
 #include <mach/clock.h>
@@ -165,17 +165,85 @@ static int is_generating(struct tvd_dev *dev)
 	return test_bit(0, &dev->generating);
 }
 
-static void start_generating(struct tvd_dev *dev)
+static int start_generating(struct tvd_dev *dev)
 {
-	 set_bit(0, &dev->generating);
-	 return;
-}	
+	struct dmaqueue *dma_q = &dev->vidq;
+	int i;
+	
+	__dbg("%s\n", __FUNCTION__);
+	
+	if (is_generating(dev)) {
+		__err("stream has been already on\n");
+		return 0;
+	}
+	
+	/* Resets frame counters */
+	dma_q->frame_jiffies = jiffies;
+	dma_q->frames_count = 0;
+	
+	/* Configure interrupts and set TVD to start capturing */
+	for(i = 0; i < 4; i++) {
+		if(dev->channel_index[i]){
+			dev->channel_irq = i; //FIXME, what frame done irq you should use when more than one channel signal?
+			break;
+		}
+	}
+	TVD_irq_status_clear(dev->channel_irq,TVD_FRAME_DONE);	
+	TVD_irq_enable(dev->channel_irq,TVD_FRAME_DONE);
+	for(i = 0; i < 4; i++) {
+		if(dev->channel_index[i])
+			TVD_capture_on(i);
+	}
+	
+	/* Set generating flag and return */
+	set_bit(0, &dev->generating);
+	return 0;
+}
 
-static void stop_generating(struct tvd_dev *dev)
+static int stop_generating(struct tvd_dev *dev)
 {
-	 first_flag = 0;
-	 clear_bit(0, &dev->generating);
-	 return;
+	struct dmaqueue *dma_q = &dev->vidq;
+	int i;
+
+	__dbg("%s\n", __FUNCTION__);
+	
+	if (!is_generating(dev)) {
+		__err("stream has been already off\n");
+		return 0;
+	}
+	
+	/* Resets frame counters */
+	dma_q->frame_jiffies = jiffies;
+	dma_q->frames_count = 0;
+	
+	/* Disable interrupts and set TVD to stop capturing */
+	TVD_irq_disable(dev->channel_irq,TVD_FRAME_DONE);
+	TVD_irq_status_clear(dev->channel_irq,TVD_FRAME_DONE);
+	for(i = 0; i < 4; i++) {
+		if(dev->channel_index[i])
+			TVD_capture_off(i);
+	}
+
+	/*
+	 * TODO:
+	 * Typical driver might need to wait here until dma engine stops.
+	 * In this case we can abort imiedetly, so it's just a noop.
+	 * Is TVD_capture_off enough to stop writing to the buffer?
+	 */
+
+	/* Release all active buffers */
+	while (!list_empty(&dma_q->list)) {
+		struct buffer *buf;
+		buf = list_entry(dma_q->list.next, struct buffer, list);
+		list_del(&buf->list);
+		vb2_buffer_done(&buf->vb, VB2_BUF_STATE_ERROR);
+		__dbg("Buffer removed from dma queue: %d\n", buf->vb.v4l2_buf.index);
+	}
+
+	/* Clear flags and return */
+	first_flag = 0;
+	clear_bit(0, &dev->generating);
+	return 0;
 }
 
 static struct frmsize * get_frmsize (int input, int width, int height)
@@ -198,29 +266,34 @@ static struct fmt * get_format(__u32 fourcc)
 			return &formats[i];
 	}
 	return NULL;
-};
+}
 
-static inline void set_addr(struct tvd_dev *dev,struct buffer *buffer)
+static inline unsigned long get_frmbytes (struct fmt *fmt, unsigned int width, unsigned int height)
+{
+	/* 
+	 * Sizeimage is usually (width*height*depth)/8 for uncompressed images, but it's different
+	 * if bytesperline is used since there could be some padding between lines.
+	 * In our case there is no padding (bytesperline = width)
+	 */
+	return width * height * fmt->depth / 8;
+}
+
+static inline void set_addr(struct tvd_dev *dev,struct buffer *buf)
 {	
 	int i;
-	struct buffer *buf = buffer;	
 	dma_addr_t addr_org;
 	
-	__dbg("buf ptr=%p\n",buf);
-	addr_org = videobuf_to_dma_contig((struct videobuf_buffer *)buf);
+	addr_org = vb2_dma_contig_plane_dma_addr(&buf->vb, 0);
 	dev->buf_addr.y = addr_org;
 	dev->buf_addr.c = addr_org + dev->width*dev->height;
-	
-	__dbg("dev->buf_addr.y=0x%08x\n", dev->buf_addr.y);
-
-	for(i=0;i<4;i++){
-		if(dev->channel_index[i]){			
-			TVD_set_addr_y(i,dev->buf_addr.y + dev->channel_offset_y[i]);
-			TVD_set_addr_c(i,dev->buf_addr.c + dev->channel_offset_c[i]);
-		}			
+	for (i = 0; i < 4; i++) {
+		if (dev->channel_index[i]) {
+			TVD_set_addr_y(i, dev->buf_addr.y + dev->channel_offset_y[i]);
+			TVD_set_addr_c(i, dev->buf_addr.c + dev->channel_offset_c[i]);
+		}
 	}
-	__dbg("buf_addr_y=%x\n",  dev->buf_addr.y);
-	__dbg("buf_addr_cb=%x\n", dev->buf_addr.c);
+	
+	__dbg("%s: buf_addr_y=%x, buf_addr_cb=%x\n", __FUNCTION__, dev->buf_addr.y, dev->buf_addr.c);
 }
 
 static int apply_format (struct tvd_dev *dev)
@@ -238,6 +311,11 @@ static int apply_format (struct tvd_dev *dev)
 	__inf("channel_index[3]=%d\n",dev->channel_index[3]);
 	__inf("width=%d\n",dev->width);
 	__inf("height=%d\n",dev->height);
+	
+	if (dev->width  < MIN_WIDTH || dev->width  > MAX_WIDTH || dev->height < MIN_HEIGHT || dev->height > MAX_HEIGHT) {
+		__err("%s: frame size not allowed (%dx%d)\n", __FUNCTION__, dev->width, dev->height);
+		return -EINVAL;
+	}
 	
 	TVD_config(dev->interface, dev->system);
 	for (i = 0; i < 4; i++) {
@@ -275,49 +353,52 @@ static irqreturn_t tvd_irq(int irq, void *priv)
 		goto set_next_addr;
 	}
 	
-	if (jiffies - dev->jiffies < dev->frameival_jiffies) {
+	/* skip frames to complain with framerate configuration */
+	if (jiffies - dma_q->frame_jiffies < dev->frameival_jiffies) {
 		__dbg("Skipped frame due to selected frame interval\n");
 		goto unlock;
 	}
+	dma_q->frame_jiffies = jiffies;
 	
-	if (list_empty(&dma_q->active)) {
+	/* if there are no queued buffers, exit */
+	if (list_empty(&dma_q->list)) {
 		__err("No active queue to serve\n");
 		goto unlock;
 	}
+
+	/* get first buffer from dma queue */
+	buf = list_entry(dma_q->list.next, struct buffer, list);
+
+	/* remove buffer from dma queue */
+	list_del(&buf->list);
+
+	/* fill frame count and timestamp (this is V4L2_FIELD_NONE -not interleaved-, so fields = frames) */
+	dma_q->frames_count++;
+	buf->vb.v4l2_buf.field = V4L2_FIELD_NONE;
+	buf->vb.v4l2_buf.sequence = dma_q->frames_count;
+	do_gettimeofday(&buf->vb.v4l2_buf.timestamp);
+
+	/* inform buffer is done */
+	vb2_buffer_done(&buf->vb, VB2_BUF_STATE_DONE);
+	__dbg("done buf = 0x%p (buffer %d), ts %ld.%ld\n", buf, buf->vb.v4l2_buf.index, (long)buf->vb.v4l2_buf.timestamp.tv_sec, buf->vb.v4l2_buf.timestamp.tv_usec);
+	/* if (!vb2_has_consumers(&dev->vb_vidq)) { TODO: how to know if there are consumers waiting
+		__dbg("Nobody is waiting to dequeue\n");
+	}*/
 	
-	buf = list_entry(dma_q->active.next,struct buffer, vb.queue);
-
-	/* Nobody is waiting on this buffer*/
-	if (!waitqueue_active(&buf->vb.done)) {
-		__dbg("Nobody is waiting on this buffer,buf = 0x%p (buffer %d)\n", buf, buf->vb.i);
-	}
-	
-	list_del(&buf->vb.queue);
-
-	do_gettimeofday(&buf->vb.ts);
-	buf->vb.field_count++;
-
-	__dbg("done buf = 0x%p (buffer %d), ts %ld.%ld\n", buf, buf->vb.i, (long)buf->vb.ts.tv_sec, buf->vb.ts.tv_usec);
-
-	dev->ms += jiffies_to_msecs(jiffies - dev->jiffies);
-	dev->jiffies = jiffies;
-
-	buf->vb.state = VIDEOBUF_DONE;
-	wake_up(&buf->vb.done);
-	
-	//judge if the frame queue has been written to the last
-	if (list_empty(&dma_q->active)) {		
+	/* judge if the frame queue has been written to the last */
+	if (list_empty(&dma_q->list)) {		
 		__dbg("No more free frame\n");		
 		goto unlock;	
 	}
 	
-	if ((&dma_q->active) == dma_q->active.next->next) {
+	if ((&dma_q->list) == dma_q->list.next->next) {
 		__dbg("No more free frame on next time\n");		
 		goto unlock;	
 	}
 		
-set_next_addr:	
-	buf = list_entry(dma_q->active.next->next,struct buffer, vb.queue);
+set_next_addr:
+	/* if there are more queued buffers, set address of first one */
+	buf = list_entry(dma_q->list.next->next,struct buffer, list);
 	set_addr(dev,buf);
 
 unlock:
@@ -517,32 +598,34 @@ static int tvd_clk_close(struct tvd_dev *dev)
 	return 0;
 }
 
+
+
+/* ------------------------------------------------------------------
+	File operations for the device
+   ------------------------------------------------------------------*/
+
 static ssize_t tvd_read(struct file *file, char __user *data, size_t count, loff_t *ppos)
 {
 	struct tvd_dev *dev = video_drvdata(file);
 
 	__dbg("%s\n", __FUNCTION__);
 
-	start_generating(dev);
-	return videobuf_read_stream(&dev->vb_vidq, data, count, ppos, 0,
-					file->f_flags & O_NONBLOCK);
+	return vb2_read(&dev->vb_vidq, data, count, ppos, file->f_flags & O_NONBLOCK);
 }
 
 static unsigned int tvd_poll(struct file *file, struct poll_table_struct *wait)
 {
 	struct tvd_dev *dev = video_drvdata(file);
-	struct videobuf_queue *q = &dev->vb_vidq;
 
 	__dbg("%s\n", __FUNCTION__);
-
-	start_generating(dev);
-	return videobuf_poll_stream(file, q, wait);
+	
+	return vb2_poll(&dev->vb_vidq, file, wait);
 }
 
 static int tvd_open(struct file *file)
 {
 	struct tvd_dev *dev = video_drvdata(file);
-	int ret=0;
+	
 	__dbg("%s\n", __FUNCTION__);
 
 	if (dev->opened == 1) {
@@ -560,21 +643,22 @@ static int tvd_open(struct file *file)
 	
 	dev->opened=1;
 	
-	return ret;		
+	return 0;
 }
 
 static int tvd_close(struct file *file)
 {
 	struct tvd_dev *dev = video_drvdata(file);
-	int ret=0;	
+	
 	__dbg("%s\n", __FUNCTION__); 
+	
 	tvd_clk_close(dev);
-	videobuf_stop(&dev->vb_vidq);
-	videobuf_mmap_free(&dev->vb_vidq);
+	
+	vb2_queue_release(&dev->vb_vidq);
 
 	dev->opened=0;
-	stop_generating(dev);	
-        return ret;
+	
+        return 0;
 }
 
 static int tvd_mmap(struct file *file, struct vm_area_struct *vma)
@@ -583,14 +667,13 @@ static int tvd_mmap(struct file *file, struct vm_area_struct *vma)
 	int ret;
 
 	__dbg("%s\n", __FUNCTION__);
-
 	__dbg("mmap called, vma=0x%08lx\n", (unsigned long)vma);
 
-	ret = videobuf_mmap_mapper(&dev->vb_vidq, vma);
+	ret = vb2_mmap(&dev->vb_vidq, vma);
 
 	__dbg("vma start=0x%08lx, size=%ld, ret=%d\n",
-	(unsigned long)vma->vm_start,
-	(unsigned long)vma->vm_end-(unsigned long)vma->vm_start,ret);
+		(unsigned long)vma->vm_start,
+		(unsigned long)vma->vm_end-(unsigned long)vma->vm_start,ret);
 	
 	return ret;
 }
@@ -605,6 +688,11 @@ static const struct v4l2_file_operations fops = {
 	.mmap     = tvd_mmap,
 };
 
+
+
+/* ------------------------------------------------------------------
+	IOCTL vidioc handling
+   ------------------------------------------------------------------*/
 
 static int vidioc_querycap(struct file *file, void  *priv,struct v4l2_capability *cap)
 {
@@ -698,12 +786,14 @@ static int vidioc_g_fmt_vid_cap(struct file *file, void *priv,struct v4l2_format
 
 	format->fmt.pix.width        = dev->width;
 	format->fmt.pix.height       = dev->height;
-	format->fmt.pix.field        = dev->vb_vidq.field;
+	format->fmt.pix.field        = V4L2_FIELD_NONE;
 	format->fmt.pix.pixelformat  = dev->fmt->fourcc;
+	format->fmt.pix.sizeimage    = get_frmbytes(dev->fmt, dev->width, dev->height); 
 	format->fmt.pix.bytesperline = dev->width;
-	format->fmt.pix.sizeimage    = dev->width * dev->height * dev->fmt->depth / 8; 
-	// Bytesperline is the "sprite". In YUV frames sprite = width of Y layer + padding (in our case padding = 0). UV layer width is calculated according to this one.
-	// Sizeimage is usually (width*height*depth)/8 for uncompressed images, but it's different if bytesperline is used since there could be some padding between lines. 
+	/* 
+	 * Bytesperline is the "sprite". In YUV frames sprite = width of Y layer + padding
+	 * (in our case padding = 0). UV layer width is calculated according to this one.
+	 */
 	
 	__dbg("CALCULATIONS: %i, %i\n", format->fmt.pix.bytesperline, format->fmt.pix.sizeimage);
 
@@ -716,7 +806,6 @@ static int vidioc_s_fmt_vid_cap(struct file *file, void *priv,struct v4l2_format
 	
         int ret = 0;
 	struct tvd_dev *dev = video_drvdata(file);
-	struct videobuf_queue *q = &dev->vb_vidq;
 	struct fmt *fmt;
 	struct frmsize *frmsize;
 	
@@ -725,12 +814,10 @@ static int vidioc_s_fmt_vid_cap(struct file *file, void *priv,struct v4l2_format
 		return -EBUSY;
 	}
 
-	mutex_lock(&q->vb_lock);
-	
 	ret = vidioc_try_fmt_vid_cap(file, priv, format);
 	if (ret < 0) {
 		__err("try format failed!\n");
-		goto out;
+		return ret;
 	}
 	
 	// check format and framesize
@@ -738,13 +825,11 @@ static int vidioc_s_fmt_vid_cap(struct file *file, void *priv,struct v4l2_format
 	frmsize = get_frmsize(dev->input, format->fmt.pix.width, format->fmt.pix.height);
 	if (!fmt || !frmsize) {
 		__err("%s: invalid format: fmt=%d, width=%d, height=%d\n", __FUNCTION__, format->fmt.pix.pixelformat, format->fmt.pix.width, format->fmt.pix.height);
-		ret = -EINVAL;
-		goto out;
+		return -EINVAL;
 	}
 		
 	//save the current format info
 	dev->fmt              = fmt;
-	dev->vb_vidq.field    = V4L2_FIELD_NONE;
 	dev->interface        = 0;
 	dev->width            = frmsize->width;
 	dev->height           = frmsize->height;
@@ -759,11 +844,8 @@ static int vidioc_s_fmt_vid_cap(struct file *file, void *priv,struct v4l2_format
 	
 	ret = apply_format(dev);
 	
-out:
 	vidioc_g_fmt_vid_cap(file, priv, format); // return current fmt
 	
-	mutex_unlock(&q->vb_lock);
-
 	return ret;
 }
 
@@ -811,7 +893,6 @@ static int vidioc_s_fmt_type_private(struct file *file, void *priv,struct v4l2_f
 	dev->channel_index[1]   = format->fmt.raw_data[11];
 	dev->channel_index[2]   = format->fmt.raw_data[12];
 	dev->channel_index[3]   = format->fmt.raw_data[13];
-	dev->vb_vidq.field      = V4L2_FIELD_NONE;
 	dev->width              = dev->column * (dev->format ? 704 : 720);
 	dev->height             = dev->row * (dev->system ? 576 : 480);
 	dev->fmt                = &formats[0]; // NV12
@@ -824,11 +905,9 @@ static int vidioc_s_fmt_type_private(struct file *file, void *priv,struct v4l2_f
 static int vidioc_reqbufs(struct file *file, void *priv,struct v4l2_requestbuffers *p)
 {
 	struct tvd_dev *dev = video_drvdata(file);
+	__dbg("%s: buffs requested: count=%d, type=%d, mem=%d\n", __FUNCTION__, p->count, p->type, p->memory);
 	
-	__dbg("%s\n", __FUNCTION__);
-	__dbg("buffs requested: count=%d, type=%d, mem=%d\n", p->count, p->type, p->memory);
-	
-	return videobuf_reqbufs(&dev->vb_vidq, p);
+	return vb2_reqbufs(&dev->vb_vidq, p);
 }
 
 static int vidioc_querybuf(struct file *file, void *priv, struct v4l2_buffer *p)
@@ -836,7 +915,7 @@ static int vidioc_querybuf(struct file *file, void *priv, struct v4l2_buffer *p)
 	struct tvd_dev *dev = video_drvdata(file);
 	__dbg("%s: buffer %d\n", __FUNCTION__, p->index);
 	
-	return videobuf_querybuf(&dev->vb_vidq, p);
+	return vb2_querybuf(&dev->vb_vidq, p);
 }
 
 static int vidioc_qbuf(struct file *file, void *priv, struct v4l2_buffer *p)
@@ -844,135 +923,38 @@ static int vidioc_qbuf(struct file *file, void *priv, struct v4l2_buffer *p)
 	struct tvd_dev *dev = video_drvdata(file);
 	__dbg("%s: buffer %d\n", __FUNCTION__, p->index);
 	
-	return videobuf_qbuf(&dev->vb_vidq, p);
+	return vb2_qbuf(&dev->vb_vidq, p);
 }
 
 static int vidioc_dqbuf(struct file *file, void *priv, struct v4l2_buffer *p)
 {
 	int ret;
-	
 	struct tvd_dev *dev = video_drvdata(file);
-
 	__dbg("%s: buffer dequeue requested\n", __FUNCTION__);
-	ret = videobuf_dqbuf(&dev->vb_vidq, p, file->f_flags & O_NONBLOCK);
-	if (ret == 0)
-		__dbg("%s: dequeued buffer %d, flags %d\n", __FUNCTION__, p->index, p->flags);
-	else
-		__dbg("%s: error dequeueing, error %d\n", __FUNCTION__, -ret);
+
+	ret = vb2_dqbuf(&dev->vb_vidq, p, file->f_flags & O_NONBLOCK);
+	
+	if (ret == 0)            {__dbg("%s: buffer dequeued %d, flags %d\n", __FUNCTION__, p->index, p->flags);}
+	else if (ret == -EAGAIN) {__dbg("%s: buffer not ready yet (returned EAGAIN with O_NONBLOCK == 1)\n", __FUNCTION__);}
+	else                     {__err("%s: error dequeueing, error %d\n", __FUNCTION__, -ret);}
+	
 	return ret;
 }
-
-#ifdef CONFIG_VIDEO_V4L1_COMPAT
-static int vidiocgmbuf(struct file *file, void *priv, struct video_mbuf *mbuf)
-{
-	struct tvd_dev *dev = video_drvdata(file);
-	__dbg("%s\n", __FUNCTION__);
-
-	return videobuf_cgmbuf(&dev->vb_vidq, mbuf, 8);
-}
-#endif
-
 
 static int vidioc_streamon(struct file *file, void *priv, enum v4l2_buf_type i)
 {
 	struct tvd_dev *dev = video_drvdata(file);
-	struct dmaqueue *dma_q = &dev->vidq;
-	struct buffer *buf;
-	int j;
-	
-	int ret;
-
 	__dbg("%s\n", __FUNCTION__);
-	if (i != V4L2_BUF_TYPE_VIDEO_CAPTURE) {
-		return -EINVAL;
-	}	
 	
-	if (is_generating(dev)) {
-		__err("stream has been already on\n");
-		return 0;
-	}
-	
-	/* Resets frame counters */
-	dev->ms = 0;
-	dev->jiffies = jiffies;
-
-	dma_q->frame = 0;
-	dma_q->ini_jiffies = jiffies;
-	
-	ret = videobuf_streamon(&dev->vb_vidq);
-	if (ret) {
-		return ret;
-	}	
-	
-	buf = list_entry(dma_q->active.next, struct buffer, vb.queue);
-	set_addr(dev,buf);
-		
-	for(j=0;j<4;j++){
-		if(dev->channel_index[j]){
-			dev->channel_irq = j;//FIXME, what frame done irq you should use when more than one channel signal?
-			break;
-		}
-	}
-	__dbg("channel_irq=%d\n", dev->channel_irq);
-	TVD_irq_status_clear(dev->channel_irq,TVD_FRAME_DONE);	
-	TVD_irq_enable(dev->channel_irq,TVD_FRAME_DONE);
-	for(j=0;j<4;j++){
-		if(dev->channel_index[j])
-			TVD_capture_on(j);
-	}
-	
-	start_generating(dev);
-		
-	return 0;
+	return vb2_streamon(&dev->vb_vidq, i);
 }
 
 static int vidioc_streamoff(struct file *file, void *priv, enum v4l2_buf_type i)
 {
 	struct tvd_dev *dev = video_drvdata(file);
-	struct dmaqueue *dma_q = &dev->vidq;
-	int ret;
-	int j;
-
 	__dbg("%s\n", __FUNCTION__);
 	
-	if (!is_generating(dev)) {
-		__err("stream has been already off\n");
-		return 0;
-	}
-	
-	stop_generating(dev);
-
-	/* Resets frame counters */
-	dev->ms = 0;
-	dev->jiffies = jiffies;
-
-	dma_q->frame = 0;
-	dma_q->ini_jiffies = jiffies;
-	
-	//FIXME
-	TVD_irq_disable(dev->channel_irq,TVD_FRAME_DONE);
-	TVD_irq_status_clear(dev->channel_irq,TVD_FRAME_DONE);
-	for(j=0;j<4;j++){
-		if(dev->channel_index[j])
-			TVD_capture_off(j);
-	}
-	
-	if (i != V4L2_BUF_TYPE_VIDEO_CAPTURE) {
-		return -EINVAL;
-	}
-
-	ret = videobuf_streamoff(&dev->vb_vidq);
-	if (ret!=0) {
-		__err("videobu_streamoff error!\n");
-		return ret;
-	}
-	
-	if (ret!=0) {
-		__err("videobuf_mmap_free error!\n");
-		return ret;
-	}
-	
-	return 0;
+	return vb2_streamoff(&dev->vb_vidq, i);
 }
 
 
@@ -1098,8 +1080,7 @@ static int vidioc_g_parm(struct file *file, void *priv,struct v4l2_streamparm *p
 	{
 		parms->parm.capture.capability = V4L2_CAP_TIMEPERFRAME;
 		parms->parm.capture.capturemode = 0;
-		parms->parm.capture.timeperframe.numerator = dev->frameival_secs.numerator;
-		parms->parm.capture.timeperframe.denominator = dev->frameival_secs.denominator;
+		parms->parm.capture.timeperframe = dev->frameival_secs;
 		parms->parm.capture.extendedmode = 0;
 		// TODO: parms->parm.capture.readbuffers = ?; see https://linuxtv.org/downloads/v4l-dvb-apis/uapi/v4l/vidioc-g-parm.html
 	}
@@ -1137,12 +1118,11 @@ static int vidioc_s_parm(struct file *file, void *priv,struct v4l2_streamparm *p
 			dev->frameival_secs.denominator = 0;
 		}
 		else {
-			dev->frameival_secs.numerator = parms->parm.capture.timeperframe.numerator;
-			dev->frameival_secs.denominator = parms->parm.capture.timeperframe.denominator;
+			dev->frameival_secs = parms->parm.capture.timeperframe;
 			dev->frameival_jiffies = msecs_to_jiffies(1000 * parms->parm.capture.timeperframe.numerator /
 				parms->parm.capture.timeperframe.denominator);
 		}
-		__dbg("frame interval set to %ul/%ul (interval (jiffies)=%ul)\n", dev->frameival_secs.numerator, dev->frameival_secs.denominator, dev->frameival_jiffies);
+		__dbg("frame interval set to %u/%u (interval (jiffies)=%lu)\n", dev->frameival_secs.numerator, dev->frameival_secs.denominator, dev->frameival_jiffies);
 	}
 	return ret;
 }
@@ -1204,9 +1184,6 @@ static const struct v4l2_ioctl_ops ioctl_ops = {
 	.vidioc_g_parm                  = vidioc_g_parm,
 	.vidioc_s_parm                  = vidioc_s_parm,
 	.vidioc_enum_frameintervals     = vidioc_enum_frameintervals,
-#ifdef CONFIG_VIDEO_V4L1_COMPAT
-	.vidiocgmbuf                    = vidiocgmbuf,
-#endif
 };
 
 
@@ -1218,127 +1195,146 @@ static struct video_device device = {
 };
 
 
-static int buffer_setup(struct videobuf_queue *vq, unsigned int *count, unsigned int *size)
-{
-	struct tvd_dev *dev = vq->priv_data;
-	__dbg("%s\n", __FUNCTION__);
-		
-	switch (dev->fmt->output_fmt) {
-		case TVD_MB_YUV420:
-		case TVD_PL_YUV420:
-		       *size = (dev->width * dev->height * 3)/2;
-			break;	
-		case TVD_PL_YUV422:
-		default:
-			*size = dev->width * dev->height * 2; //3/2; RZ WHY 3/2?
-			break;
-	}
-	
- 	__dbg("RZ SET SIZE TO %i\n", *size);
-	dev->frame_size = *size;
-	
-	if (*count < 3) {
-		*count = 3;
-		__err("buffer count is invalid, set to 3\n");
-	} else if(*count > 32) {	
-	       __err("buffer count is invalid(%d), set to 32\n", *count );
-		*count = 32;
-	}
 
-	while (*size * *count > MAX_BUFFER) {//FIXME
-		(*count)--;
-	}
+/* ------------------------------------------------------------------
+	Videobuf operations
+   ------------------------------------------------------------------*/
+
+static int queue_setup(struct vb2_queue *vq, const struct v4l2_format *fmt,
+				unsigned int *nbuffers, unsigned int *nplanes,
+				unsigned int sizes[], void *alloc_ctxs[])
+{
+	struct tvd_dev *dev = vb2_get_drv_priv(vq);
 	
-	__dbg("%s, buffer count=%d, size=%d\n", __func__,*count, *size);
-	return 0;
+	__dbg("%s\n", __FUNCTION__);
+	
+	if (*nplanes == 0) /* called from VIDIOC_REQBUFS */
+	{
+		if (*nbuffers < 3) // TODO: remove in new version of vb2, setting vq->min_buffers is enough
+			*nbuffers = 3;
+		*nplanes = 1;
+		sizes[0] = get_frmbytes(dev->fmt, dev->width, dev->height);
+		alloc_ctxs[0] = dev->alloc_ctx; // TODO: remove in new version of vb2, alloc_ctx was removed
+		return 0;
+	}
+	else /* called from VIDIOC_CREATE_BUFS */
+	{
+		if (*nbuffers + vq->num_buffers < 3) // TODO: remove in new version of vb2, setting vq->min_buffers is enough
+			*nbuffers = 3 - vq->num_buffers;
+		return (sizes[0] < get_frmbytes(dev->fmt, dev->width, dev->height)) ? -EINVAL : 0;
+	}
 }
 
-static void free_buffer(struct videobuf_queue *vq, struct buffer *buf)
-{
-	__dbg("%s\n", __FUNCTION__);
-	__dbg("%s, state: %i\n", __func__, buf->vb.state);
 
-	videobuf_dma_contig_free(vq, &buf->vb);
-	
-	__dbg("free_buffer: freed\n");
-	
-	buf->vb.state = VIDEOBUF_NEEDS_INIT;
-}
-
-static int buffer_prepare(struct videobuf_queue *vq, struct videobuf_buffer *vb,enum v4l2_field field)
+static int buffer_init(struct vb2_buffer *vb)
 {
-	struct tvd_dev *dev = vq->priv_data;
+	struct tvd_dev *dev = vb2_get_drv_priv(vb->vb2_queue);
 	struct buffer *buf = container_of(vb, struct buffer, vb);
-	int rc;
 
-	__dbg("%s: buffer %d\n", __FUNCTION__, vb->i);
-	__dbg("req. field: %d\n", field);
+	__dbg("%s: buffer %d\n", __FUNCTION__, vb->v4l2_buf.index);
 
 	BUG_ON(NULL == dev->fmt);
 
-	if (dev->width  < MIN_WIDTH || dev->width  > MAX_WIDTH ||
-	    dev->height < MIN_HEIGHT || dev->height > MAX_HEIGHT) {
-		return -EINVAL;
-	}
+	INIT_LIST_HEAD(&buf->list);
 	
-	buf->vb.size = dev->frame_size;			
-	
-	if (0 != buf->vb.baddr && buf->vb.bsize < buf->vb.size) {
-		return -EINVAL;
-	}
-
-	/* These properties only change when queue is idle, see s_fmt */
-	buf->fmt       = dev->fmt;
-	buf->vb.width  = dev->width;
-	buf->vb.height = dev->height;
-	buf->vb.field  = V4L2_FIELD_NONE; //field;
-
-	if (VIDEOBUF_NEEDS_INIT == buf->vb.state) {
-		rc = videobuf_iolock(vq, &buf->vb, NULL);
-		if (rc < 0) {
-			goto fail;
-		}
-	}
-
-	vb->boff= videobuf_to_dma_contig(vb);
-	buf->vb.state = VIDEOBUF_PREPARED;
+	/*
+	 * This callback is called once per buffer, after its allocation.
+	 *
+	 * This driver does not allow changing format during streaming, but it is
+	 * possible to do so when streaming is paused (i.e. in streamoff state).
+	 * Buffers however are not freed when going into streamoff and so
+	 * buffer size verification has to be done in buffer_prepare, on each
+	 * qbuf.
+	 * It would be best to move verification code here to buf_init and
+	 * s_fmt though.
+	 */
 
 	return 0;
-
-fail:
-	free_buffer(vq, buf);
-	return rc;
 }
 
-static void buffer_queue(struct videobuf_queue *vq, struct videobuf_buffer *vb)
+static int buffer_prepare(struct vb2_buffer *vb)
 {
-	struct tvd_dev *dev = vq->priv_data;
+	struct tvd_dev *dev = vb2_get_drv_priv(vb->vb2_queue);
+	struct buffer *buf = container_of(vb, struct buffer, vb);
+	unsigned long size;
+
+	__dbg("%s: buffer %d\n", __FUNCTION__, vb->v4l2_buf.index);
+
+	BUG_ON(NULL == dev->fmt);
+
+	/* 
+	 * format may have changed since buffers were allocated. This is because
+	 * when doing streamoff they're not deallocated and they can be reused.
+	 * Check if they're still big enough and set them to current size and format.
+	 */
+	size = get_frmbytes(dev->fmt, dev->width, dev->height);
+	
+	if (vb2_plane_size(vb, 0) < size) {
+		__err("%s: buffer size is not enough\n", __FUNCTION__);
+		return -EINVAL;
+	}
+	
+	vb2_set_plane_payload(vb, 0, size); /* set used size in buffer (buffer may be bigger) */
+	buf->fmt = dev->fmt;
+
+	return 0;
+}
+
+static void buffer_queue(struct vb2_buffer *vb)
+{
+	struct tvd_dev *dev = vb2_get_drv_priv(vb->vb2_queue);
 	struct buffer *buf = container_of(vb, struct buffer, vb);
 	struct dmaqueue *vidq = &dev->vidq;
+	unsigned long flags = 0;
 
-	__dbg("%s: buffer %d\n", __FUNCTION__, vb->i);
-	buf->vb.state = VIDEOBUF_QUEUED;
-	if (list_empty(&vidq->active))
-		set_addr(dev, buf);
-	list_add_tail(&buf->vb.queue, &vidq->active);
+	__dbg("%s: buffer %d\n", __FUNCTION__, vb->v4l2_buf.index);
+
+	/* buffer is queued and we have now the control of it */
+	spin_lock_irqsave(&dev->slock, flags);
+	if (list_empty(&vidq->list)) /* if dma queue is empty, start writing to this buffer */
+		set_addr(dev, buf); // FIXME: probably this should't be here, but in IRQ function
+	list_add_tail(&buf->list, &vidq->list); /* add buffer to dma queue */
+	spin_unlock_irqrestore(&dev->slock, flags);
 }
 
-static void buffer_release(struct videobuf_queue *vq,
-			   struct videobuf_buffer *vb)
+static int start_streaming(struct vb2_queue *vq, unsigned int count)
 {
-	struct buffer *buf  = container_of(vb, struct buffer, vb);
-
+	struct tvd_dev *dev = vb2_get_drv_priv(vq);
 	__dbg("%s\n", __FUNCTION__);
-	
-	free_buffer(vq, buf);
+	return start_generating(dev);
 }
 
-static struct videobuf_queue_ops video_qops = {
-	.buf_setup    = buffer_setup,
-	.buf_prepare  = buffer_prepare,
-	.buf_queue    = buffer_queue,
-	.buf_release  = buffer_release,
+static int stop_streaming(struct vb2_queue *vq)
+{
+	struct tvd_dev *dev = vb2_get_drv_priv(vq);
+	__dbg("%s\n", __FUNCTION__);
+	return stop_generating(dev);
+}
+
+static void wait_finish(struct vb2_queue *vq)
+{
+	struct tvd_dev *dev = vb2_get_drv_priv(vq);
+	mutex_lock(&dev->mutex);
+}
+
+static void wait_prepare(struct vb2_queue *vq)
+{
+	struct tvd_dev *dev = vb2_get_drv_priv(vq);
+	mutex_unlock(&dev->mutex);
+}
+
+static struct vb2_ops buffers_ops = {
+	.queue_setup		= queue_setup,
+	.buf_init		= buffer_init,
+	.buf_prepare		= buffer_prepare,
+	.buf_queue		= buffer_queue,
+	.start_streaming	= start_streaming,
+	.stop_streaming		= stop_streaming,
+	.wait_prepare		= wait_prepare,
+	.wait_finish		= wait_finish,
 };
+
+
 
 static int tvd_probe(struct platform_device *pdev)
 {
@@ -1440,21 +1436,40 @@ static int tvd_probe(struct platform_device *pdev)
 	dev->vfd = vfd;
 
 	__inf("V4L2 device registered as %s\n",video_device_node_name(vfd));
+	
+	/* init videobuf2 allocation */
+	dev->alloc_ctx = vb2_dma_contig_init_ctx(&pdev->dev);
+	if (IS_ERR(dev->alloc_ctx)) {
+		__err("DMA contig init error\n");
+		goto unreg_vdev;
+	}
 
-	/*initial video buffer queue*/
-	videobuf_queue_dma_contig_init(&dev->vb_vidq, &video_qops,
-			NULL, &dev->slock, V4L2_BUF_TYPE_VIDEO_CAPTURE,
-			V4L2_FIELD_NONE,
-			sizeof(struct buffer), dev,NULL);
+	/* init video buffer queue */
+	memset(&dev->vb_vidq, 0, sizeof(dev->vb_vidq));
+	dev->vb_vidq.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+	dev->vb_vidq.io_modes = VB2_MMAP;
+	dev->vb_vidq.drv_priv = dev;
+	dev->vb_vidq.buf_struct_size = sizeof(struct buffer);
+	dev->vb_vidq.ops = &buffers_ops;
+	dev->vb_vidq.mem_ops = &vb2_dma_contig_memops;
+	ret = vb2_queue_init(&dev->vb_vidq);
+	if (ret < 0) {
+		__err("vb2 queue init error\n");
+		goto clean_alloc_ctx;
+	}
+	
+	/* Provide a mutex to v4l2 core. It will be used to protect all fops and v4l2 ioctls. */
+	mutex_init(&dev->mutex);
+	vfd->lock = &dev->mutex;
+
 	
 	/* init video dma queues */
-	INIT_LIST_HEAD(&dev->vidq.active);
+	INIT_LIST_HEAD(&dev->vidq.list);
 	//init_waitqueue_head(&dev->vidq.wq);
 	
 	/* set initial config */
 	dev->input            = 0;
 	dev->fmt              = &formats[0];
-	dev->vb_vidq.field    = V4L2_FIELD_NONE;
 	dev->interface        = 0;
 	dev->width            = inputs[dev->input].frmsizes[0].width;
 	dev->height           = inputs[dev->input].frmsizes[0].height;
@@ -1474,6 +1489,10 @@ static int tvd_probe(struct platform_device *pdev)
 
 	return 0;
 
+clean_alloc_ctx:
+	vb2_dma_contig_cleanup_ctx(dev->alloc_ctx);
+unreg_vdev:
+	video_unregister_device(dev->vfd);
 rel_vdev:
 	video_device_release(vfd);
 err_clk:
@@ -1520,6 +1539,7 @@ static int tvd_release(void)
 static int __devexit tvd_remove(struct platform_device *pdev)
 {
 	struct tvd_dev *dev=(struct tvd_dev *)dev_get_drvdata(&(pdev)->dev);	
+	vb2_dma_contig_cleanup_ctx(dev->alloc_ctx);
 	free_irq(dev->irq, dev);//	
 	tvd_clk_exit(dev);
 	iounmap(dev->regs);
@@ -1588,13 +1608,15 @@ static struct platform_device tvd_device = {
         .id             	= -1, // FIXME
 	.num_resources		= ARRAY_SIZE(tvd_resource),
         .resource       	= tvd_resource,
-        //.coherent_dma_mask = DMA_BIT_MASK(32),
-	.dev            	= {}
+	.dev            	= {
+		.coherent_dma_mask = DMA_BIT_MASK(32),
+	}
 };
 
 static int __init tvd_init(void)
 {
 	__u32 ret=0;
+	
 	ret = platform_device_register(&tvd_device);
 	if (ret) {
 		__err("platform device register failed!\n");

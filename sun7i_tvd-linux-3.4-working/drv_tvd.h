@@ -83,14 +83,15 @@ struct input_cnf {
 
 /* buffer for one video frame */
 struct buffer {
-	struct videobuf_buffer  vb;
-	struct fmt              *fmt;
+	struct vb2_buffer vb;
+	struct list_head  list;
+	struct fmt        *fmt;
 };
 
 struct dmaqueue {
-	struct list_head active;
-	int frame;      /* Counters to control fps rate */
-	int ini_jiffies;
+	struct list_head list;
+	unsigned long    frame_jiffies;
+	unsigned int     frames_count;
 };
 
 struct buf_addr {
@@ -109,15 +110,16 @@ struct tvd_dev {
 	int			id;
 	
 	spinlock_t              slock;
+	struct mutex            mutex;
+	
+	struct vb2_alloc_ctx    *alloc_ctx; // TODO: remove for new version of vb2
 
 	/* various device info */
 	struct video_device     *vfd;
 
-	struct dmaqueue         vidq;
-
-	/* Several counters */
-	unsigned 	        ms;
-	unsigned long           jiffies;
+	/* queues */
+	struct dmaqueue         vidq;     /* queue for driver */
+	struct vb2_queue        vb_vidq;  /* queue for videobuf2 */
 
 	/* Input Number */
 	int	                input;
@@ -126,16 +128,11 @@ struct tvd_dev {
 	struct fmt              *fmt;
 	unsigned int            width;
 	unsigned int            height;
-	unsigned int		frame_size;
-	struct videobuf_queue   vb_vidq;
-
-	/*  */
 	unsigned int            interface;
 	unsigned int            system;
 	unsigned int            format;
 	unsigned int            row;
 	unsigned int            column;
-	//unsigned int channel_en[4];
 	unsigned int            channel_index[4];	
 	unsigned int            channel_offset_y[4];
 	unsigned int            channel_offset_c[4];
