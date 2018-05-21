@@ -397,7 +397,7 @@ static irqreturn_t tvd_irq(int irq, void *priv)
 	}
 		
 set_next_addr:
-	/* if there are more queued buffers, set address of first one */
+	/* next frame is being writen to first buffer of the queue, set address of second buffer for next time */
 	buf = list_entry(dma_q->list.next->next,struct buffer, list);
 	set_addr(dev,buf);
 
@@ -1290,8 +1290,8 @@ static void buffer_queue(struct vb2_buffer *vb)
 
 	/* buffer is queued and we have now the control of it */
 	spin_lock_irqsave(&dev->slock, flags);
-	if (list_empty(&vidq->list)) /* if dma queue is empty, start writing to this buffer */
-		set_addr(dev, buf); // FIXME: probably this should't be here, but in IRQ function
+	if (list_empty(&vidq->list) || (&vidq->list) == vidq->list.next->next)
+		set_addr(dev, buf); /* if there was no next frame in dma queue, set it address */
 	list_add_tail(&buf->list, &vidq->list); /* add buffer to dma queue */
 	spin_unlock_irqrestore(&dev->slock, flags);
 }
