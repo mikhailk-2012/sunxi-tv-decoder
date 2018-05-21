@@ -728,12 +728,17 @@ static int vidioc_enum_fmt_vid_cap(struct file *file, void  *priv,struct v4l2_fm
 
 static int vidioc_enum_framesizes (struct file *file, void *priv, struct v4l2_frmsizeenum *frmsize)
 {
+	struct fmt *fmt;
 	struct frmsize *fsz;
 	struct tvd_dev *dev = video_drvdata(file);
 	
 	__dbg("%s: idx=%d, format=%d\n", __FUNCTION__, frmsize->index, frmsize->pixel_format);
 	
 	if (frmsize->index > inputs[dev->input].frmsizes_cnt - 1)
+		return -EINVAL;
+	
+	fmt = get_format(frmsize->pixel_format);
+	if (fmt == NULL)
 		return -EINVAL;
 	
 	fsz = &inputs[dev->input].frmsizes[frmsize->index];
@@ -747,36 +752,36 @@ static int vidioc_enum_framesizes (struct file *file, void *priv, struct v4l2_fr
 
 static int vidioc_try_fmt_vid_cap(struct file *file, void *priv,struct v4l2_format *format)
 {
-        int ret = 0;
-#if 0
 	struct tvd_dev *dev = video_drvdata(file);
 	struct fmt *fmt;
+	struct frmsize *frmsize;
 	
-	
-	__dbg("%s\n", __FUNCTION__);
-
-	//judge the resolution
-	if(format->fmt.pix.width > MAX_WIDTH || format->fmt.pix.height > MAX_HEIGHT) {
-		__err("size is too large,automatically set to maximum!\n");
-		format->fmt.pix.width = MAX_WIDTH;
-		format->fmt.pix.height = MAX_HEIGHT;
-	}
-
-	fmt = get_format(format);
-	if (!fmt) {
-		__err("Fourcc format (0x%08x) invalid.\n",format->fmt.pix.pixelformat);
+	if (format->type != V4L2_BUF_TYPE_VIDEO_CAPTURE) {
+		__err("%s: wrong buffer type (%d), only V4L2_BUF_TYPE_VIDEO_CAPTURE is supported\n", __FUNCTION__, format->type);
 		return -EINVAL;
 	}
+	
+	fmt = get_format(format->fmt.pix.pixelformat);
+	if (fmt == NULL) { /* invalid format, pick a valid one instead */
+		fmt = &formats[0];
+		format->fmt.pix.pixelformat = fmt->fourcc;
+	}
+	
+	frmsize = get_frmsize(dev->input, format->fmt.pix.width, format->fmt.pix.height);
+	if (frmsize == NULL) { /* invalid framesize, pick a valid one instead */
+		frmsize = &inputs[dev->input].frmsizes[0];
+		format->fmt.pix.width = frmsize->width;
+		format->fmt.pix.height = frmsize->height;
+	}
 
-	//format->fmt.pix.width = 720;
-	//format->fmt.pix.height = 480;
-
-	__dbg("pix->width=%d\n",format->fmt.pix.width);
-	__dbg("pix->height=%d\n",format->fmt.pix.height);
-#endif
-	return ret;
+	format->fmt.pix.field        = V4L2_FIELD_NONE;
+	format->fmt.pix.sizeimage    = get_frmbytes(fmt, frmsize->width, frmsize->height); 
+	format->fmt.pix.bytesperline = frmsize->width; /* planar fmts: width of first plane (Y) + padding (we use padding = 0) */
+	format->fmt.pix.colorspace   = V4L2_COLORSPACE_SMPTE170M; /* correct? standard colorspace for PAL & NTSC */
+	format->fmt.pix.priv         = 0;
+	
+	return 0;
 }
-
 
 static int vidioc_g_fmt_vid_cap(struct file *file, void *priv,struct v4l2_format *format)
 {
@@ -789,11 +794,9 @@ static int vidioc_g_fmt_vid_cap(struct file *file, void *priv,struct v4l2_format
 	format->fmt.pix.field        = V4L2_FIELD_NONE;
 	format->fmt.pix.pixelformat  = dev->fmt->fourcc;
 	format->fmt.pix.sizeimage    = get_frmbytes(dev->fmt, dev->width, dev->height); 
-	format->fmt.pix.bytesperline = dev->width;
-	/* 
-	 * Bytesperline is the "sprite". In YUV frames sprite = width of Y layer + padding
-	 * (in our case padding = 0). UV layer width is calculated according to this one.
-	 */
+	format->fmt.pix.bytesperline = dev->width; /* planar fmts: width of first plane (Y) + padding (we use padding = 0) */
+	format->fmt.pix.colorspace   = V4L2_COLORSPACE_SMPTE170M; /* correct? standard colorspace for PAL & NTSC */
+	format->fmt.pix.priv         = 0;
 	
 	__dbg("CALCULATIONS: %i, %i\n", format->fmt.pix.bytesperline, format->fmt.pix.sizeimage);
 
@@ -804,49 +807,40 @@ static int vidioc_s_fmt_vid_cap(struct file *file, void *priv,struct v4l2_format
 {
 	__dbg("%s\n", __FUNCTION__);
 	
-        int ret = 0;
 	struct tvd_dev *dev = video_drvdata(file);
-	struct fmt *fmt;
 	struct frmsize *frmsize;
 	
-	if (is_generating(dev)) {
-		__err("%s device busy\n", __func__);
-		return -EBUSY;
-	}
-
-	ret = vidioc_try_fmt_vid_cap(file, priv, format);
-	if (ret < 0) {
-		__err("try format failed!\n");
-		return ret;
-	}
-	
-	// check format and framesize
-	fmt = get_format(format->fmt.pix.pixelformat);
-	frmsize = get_frmsize(dev->input, format->fmt.pix.width, format->fmt.pix.height);
-	if (!fmt || !frmsize) {
-		__err("%s: invalid format: fmt=%d, width=%d, height=%d\n", __FUNCTION__, format->fmt.pix.pixelformat, format->fmt.pix.width, format->fmt.pix.height);
+	/* check errors */
+	if (format->type != V4L2_BUF_TYPE_VIDEO_CAPTURE) {
+		__err("%s: wrong buffer type (%d), only V4L2_BUF_TYPE_VIDEO_CAPTURE is supported\n", __FUNCTION__, format->type);
 		return -EINVAL;
 	}
-		
-	//save the current format info
-	dev->fmt              = fmt;
+	
+	if (is_generating(dev)) {
+		__err("%s: device busy\n", __func__);
+		return -EBUSY;
+	}
+	
+	/* check if format is valid, correct it if not */
+	vidioc_try_fmt_vid_cap(file, priv, format);
+	
+	/* save and apply the new format */
+	frmsize = get_frmsize(dev->input, format->fmt.pix.width, format->fmt.pix.height);
+
+	dev->fmt              = get_format(format->fmt.pix.pixelformat);;
 	dev->interface        = 0;
 	dev->width            = frmsize->width;
 	dev->height           = frmsize->height;
 	dev->row              = frmsize->rows;
 	dev->column           = frmsize->cols;
-	dev->system           = dev->height / dev->row == 480 ? 0 : 1; // 0 = ntsc, 1 = pal
-	dev->format           = dev->width / dev->column == 720 ? 0 : 1; // 0 = non mb, 1 = mb
+	dev->system           = frmsize->height / frmsize->rows == 480 ? 0 : 1; /* 0 = ntsc, 1 = pal */
+	dev->format           = frmsize->width  / frmsize->cols == 720 ? 0 : 1; /* 0 = non mb, 1 = mb */
 	dev->channel_index[0] = inputs[dev->input].channel_idx[0];
 	dev->channel_index[1] = inputs[dev->input].channel_idx[1];
 	dev->channel_index[2] = inputs[dev->input].channel_idx[2];
 	dev->channel_index[3] = inputs[dev->input].channel_idx[3];
 	
-	ret = apply_format(dev);
-	
-	vidioc_g_fmt_vid_cap(file, priv, format); // return current fmt
-	
-	return ret;
+	return apply_format(dev);
 }
 
 static int vidioc_g_fmt_type_private(struct file *file, void *priv,struct v4l2_format *format)
@@ -1012,8 +1006,8 @@ static int vidioc_s_input(struct file *file, void *priv, unsigned int i)
 	dev->height           = frmsize->height;
 	dev->row              = frmsize->rows;
 	dev->column           = frmsize->cols;
-	dev->system           = dev->height / dev->row == 480 ? 0 : 1; // 0 = ntsc, 1 = pal
-	dev->format           = dev->width / dev->column == 720 ? 0 : 1; // 0 = non mb, 1 = mb
+	dev->system           = frmsize->height / frmsize->rows == 480 ? 0 : 1; /* 0 = ntsc, 1 = pal */
+	dev->format           = frmsize->width  / frmsize->cols == 720 ? 0 : 1; /* 0 = non mb, 1 = mb */
 	dev->channel_index[0] = inputs[dev->input].channel_idx[0];
 	dev->channel_index[1] = inputs[dev->input].channel_idx[1];
 	dev->channel_index[2] = inputs[dev->input].channel_idx[2];
@@ -1032,8 +1026,12 @@ static int vidioc_queryctrl(struct file *file, void *priv,struct v4l2_queryctrl 
 
 	next = qc->id & V4L2_CTRL_FLAG_NEXT_CTRL;
 	id = qc->id & (~V4L2_CTRL_FLAG_NEXT_CTRL);
-	if (next && id < V4L2_CID_MIN_BUFFERS_FOR_CAPTURE)
-		qc->id = V4L2_CID_MIN_BUFFERS_FOR_CAPTURE;
+	if (next) {
+		if (id < V4L2_CID_MIN_BUFFERS_FOR_CAPTURE)
+			qc->id = V4L2_CID_MIN_BUFFERS_FOR_CAPTURE;
+		else
+			return -EINVAL;
+	}
 	
 	if (qc->id == V4L2_CID_MIN_BUFFERS_FOR_CAPTURE) {
 		qc->type = V4L2_CTRL_TYPE_INTEGER;
@@ -1122,6 +1120,7 @@ static int vidioc_s_parm(struct file *file, void *priv,struct v4l2_streamparm *p
 			dev->frameival_jiffies = msecs_to_jiffies(1000 * parms->parm.capture.timeperframe.numerator /
 				parms->parm.capture.timeperframe.denominator);
 		}
+		// TODO: ? = parms->parm.capture.readbuffers; see https://linuxtv.org/downloads/v4l-dvb-apis/uapi/v4l/vidioc-g-parm.html
 		__dbg("frame interval set to %u/%u (interval (jiffies)=%lu)\n", dev->frameival_secs.numerator, dev->frameival_secs.denominator, dev->frameival_jiffies);
 	}
 	return ret;
