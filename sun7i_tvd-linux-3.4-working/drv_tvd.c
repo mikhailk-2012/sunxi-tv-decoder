@@ -35,6 +35,7 @@
 #define DBG_EN 0
 #define ERR_EN 0
 #define INF_EN 0
+#define DIRTY_HACK_RETURN_DMA_ADDR 1
 #if(DBG_EN == 1)		
 	#define __dbg(x, arg...) printk(KERN_DEBUG "[TVD_DBG]"x, ##arg)
 #else
@@ -931,6 +932,13 @@ static int vidioc_dqbuf(struct file *file, void *priv, struct v4l2_buffer *p)
 	if (ret == 0)            {__dbg("%s: buffer dequeued %d, flags %d\n", __FUNCTION__, p->index, p->flags);}
 	else if (ret == -EAGAIN) {__dbg("%s: buffer not ready yet (returned EAGAIN with O_NONBLOCK == 1)\n", __FUNCTION__);}
 	else                     {__err("%s: error dequeueing, error %d\n", __FUNCTION__, -ret);}
+	
+	#if DIRTY_HACK_RETURN_DMA_ADDR
+	for (int i = 0; i < dev->vb_vidq.num_buffers; i++) {
+		if (dev->vb_vidq.bufs[i]->v4l2_buf.index == p->index)
+			p->reserved = vb2_dma_contig_plane_dma_addr(dev->vb_vidq.bufs[i], 0);
+	}
+	#endif
 	
 	return ret;
 }
