@@ -5,9 +5,9 @@
 
 typedef enum
 {
-        TVD_PL_YUV422,
-        TVD_PL_YUV420,
-        TVD_MB_YUV420, 
+        TVD_PL_YUV422,  // format NV16
+        TVD_PL_YUV420   // format NV12
+        /*TVD_MB_YUV420*/
 }tvd_fmt_t;
 
 typedef enum

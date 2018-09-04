@@ -240,19 +240,19 @@ void TVD_set_fmt(__u32 id, tvd_fmt_t fmt)
 	__u32 reg_val;
 	reg_val = REG_RD32(addr_base + 0x130+0x100*id);
 	switch(fmt){
-		case TVD_PL_YUV422:				
+		case TVD_PL_YUV422:
 			reg_val &= ~(1<<24);
 			reg_val |= 1<<4;
 			break;
-		case TVD_PL_YUV420:				
+		case TVD_PL_YUV420:
 			reg_val &= ~(1<<24);
 			reg_val &= ~(1<<4);
 			break;
-		case TVD_MB_YUV420:				
+		/*case TVD_MB_YUV420:
 			reg_val |= 1<<24;
 			reg_val &= ~(1<<4);
-			break;
-	}	
+			break;*/
+	}
 	REG_WR32(addr_base + 0x130+0x100*id, reg_val);
 }
 

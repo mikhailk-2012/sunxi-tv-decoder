@@ -69,10 +69,10 @@ static struct fmt formats[] = {
 		.depth        = 12
 	},
 	{
-		.name         = "planar YUV420 - NV21",
-		.fourcc       = V4L2_PIX_FMT_NV21,
-		.output_fmt   = TVD_PL_YUV420,
-		.depth        = 12
+		.name         = "planar YUV422 - NV16",
+		.fourcc       = V4L2_PIX_FMT_NV16,
+		.output_fmt   = TVD_PL_YUV422,
+		.depth        = 16
 	}
 };
 
@@ -321,7 +321,7 @@ static int apply_format (struct tvd_dev *dev)
 	TVD_config(dev->interface, dev->system);
 	for (i = 0; i < 4; i++) {
 		if (dev->channel_index[i]) {
-			TVD_set_fmt(i, dev->format ? TVD_MB_YUV420 : TVD_PL_YUV420);
+			TVD_set_fmt(i, dev->fmt->output_fmt);
 			TVD_set_width(i, (dev->format ? 704 : 720));
 			if (dev->interface == 2)
 				TVD_set_height(i, (dev->system ? 576 : 480));
