@@ -24,8 +24,8 @@
 #include <media/videobuf-dma-contig.h>
 #include <linux/moduleparam.h>
 //#include <mach/sys_config.h>
-#include <mach/clock.h>
-#include <mach/irqs.h>
+//#include <mach/clock.h>
+//#include <mach/irqs.h>
 #include <linux/regulator/consumer.h>
 
 #include <linux/types.h>
@@ -83,7 +83,7 @@ struct input_cnf {
 
 /* buffer for one video frame */
 struct buffer {
-	struct vb2_buffer vb;
+	struct /*vb2_v4l2_buffer*/vb2_buffer vb;
 	struct list_head  list;
 	struct fmt        *fmt;
 };
@@ -112,7 +112,8 @@ struct tvd_dev {
 	spinlock_t              slock;
 	struct mutex            mutex;
 	
-	struct vb2_alloc_ctx    *alloc_ctx; // TODO: remove for new version of vb2
+	//struct vb2_alloc_ctx    *alloc_ctx; // TODO: remove for new version of vb2
+	struct device *alloc_ctx;
 
 	/* various device info */
 	struct video_device     *vfd;
@@ -145,7 +146,7 @@ struct tvd_dev {
 	//clock
 	struct clk		*ahb_clk;
 	struct clk		*module1_clk;
-        struct clk		*module2_clk;
+    struct clk		*module2_clk;
 	struct clk		*dram_clk;
 
 	int			irq;

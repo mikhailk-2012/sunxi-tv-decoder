@@ -1,3 +1,5 @@
+#include <linux/of_device.h>
+#include <linux/of_irq.h>
 #include <linux/module.h>
 #include <linux/errno.h>
 #include <linux/kernel.h>
@@ -18,13 +20,14 @@
 #include <linux/platform_device.h>
 #include <linux/interrupt.h>
 #include <linux/i2c.h>
-#include <media/videobuf2-core.h>
+//#include <media/videobuf2-core.h>
+#include <media/videobuf2-v4l2.h>
 #include <media/v4l2-subdev.h>
 #include <media/videobuf2-dma-contig.h>
 #include <linux/moduleparam.h>
 //#include <mach/sys_config.h>
-#include <mach/clock.h>
-#include <mach/irqs.h>
+//#include <mach/clock.h>
+//#include <mach/irqs.h>
 #include <linux/regulator/consumer.h>
 #include <linux/types.h>
 
@@ -32,11 +35,11 @@
 #include "bsp_tvd.h"
 #include "drv_tvd.h"
 
-#define DBG_EN 0
-#define ERR_EN 0
-#define INF_EN 0
+#define DBG_EN 1
+#define ERR_EN 1
+#define INF_EN 1
 #define DIRTY_HACK_RETURN_DMA_ADDR 1
-#if(DBG_EN == 1)		
+#if(DBG_EN == 0)
 	#define __dbg(x, arg...) printk(KERN_DEBUG "[TVD_DBG]"x, ##arg)
 #else
 	#define __dbg(x, arg...) 
@@ -83,7 +86,7 @@ static struct input_cnf inputs[] = {
 		.frmsizes_cnt = ARRAY_SIZE(frmsizes_1_channel),
 		.frmsizes     = frmsizes_1_channel,
 		.channel_idx  = {1, 0, 0, 0}
-	},
+	}/*,
 	{
 		.channels_num = 1,
 		.name         = "TV input 2",
@@ -153,7 +156,7 @@ static struct input_cnf inputs[] = {
 		.frmsizes_cnt = ARRAY_SIZE(frmsizes_4_channels),
 		.frmsizes     = frmsizes_4_channels,
 		.channel_idx  = {1, 2, 3, 4}
-	}
+	} */
 };
 
 
@@ -238,7 +241,7 @@ static int stop_generating(struct tvd_dev *dev)
 		buf = list_entry(dma_q->list.next, struct buffer, list);
 		list_del(&buf->list);
 		vb2_buffer_done(&buf->vb, VB2_BUF_STATE_ERROR);
-		__dbg("Buffer removed from dma queue: %d\n", buf->vb.v4l2_buf.index);
+		__dbg("Buffer removed from dma queue: %d\n", buf->vb.index);
 	}
 
 	/* Clear flags and return */
@@ -347,6 +350,8 @@ static irqreturn_t tvd_irq(int irq, void *priv)
 	struct buffer *buf;	
 	struct tvd_dev *dev = (struct tvd_dev *)priv;
 	struct dmaqueue *dma_q = &dev->vidq;
+	//struct vb2_v4l2_buffer *vbuf;
+
 	
 	spin_lock(&dev->slock);
 	if (first_flag == 0) {
@@ -375,13 +380,14 @@ static irqreturn_t tvd_irq(int irq, void *priv)
 
 	/* fill frame count and timestamp (this is V4L2_FIELD_NONE -not interleaved-, so fields = frames) */
 	dma_q->frames_count++;
-	buf->vb.v4l2_buf.field = V4L2_FIELD_NONE;
-	buf->vb.v4l2_buf.sequence = dma_q->frames_count;
-	do_gettimeofday(&buf->vb.v4l2_buf.timestamp);
+	//buf->vb.vb2_buf.field = V4L2_FIELD_NONE;
+	//buf->vb.vb2_queue->.sequence = dma_q->frames_count;
+	buf->vb.timestamp = ktime_get_ns();
+	//do_gettimeofday(&buf->vb.vb2_buf.timestamp);
 
 	/* inform buffer is done */
 	vb2_buffer_done(&buf->vb, VB2_BUF_STATE_DONE);
-	__dbg("done buf = 0x%p (buffer %d), ts %ld.%ld\n", buf, buf->vb.v4l2_buf.index, (long)buf->vb.v4l2_buf.timestamp.tv_sec, buf->vb.v4l2_buf.timestamp.tv_usec);
+	__dbg("done buf = 0x%p (buffer %d), ts %ld\n", buf, buf->vb.index, (long)buf->vb.timestamp);
 	/* if (!vb2_has_consumers(&dev->vb_vidq)) { TODO: how to know if there are consumers waiting
 		__dbg("Nobody is waiting to dequeue\n");
 	}*/
@@ -413,71 +419,55 @@ unlock:
 
 static int tvd_clk_init(struct tvd_dev *dev,int interface)
 {
-	int ret;
-	struct clk *module_clk_src;
+	int ret =0;
+	struct clk    *module1_clk_src;   /* parent clock for module1_clk */
 	unsigned long desired_rate;
+	unsigned long current_pll_rate;
 
-	dev->ahb_clk=clk_get(NULL, "ahb_tvd");
-	if (NULL == dev->ahb_clk || IS_ERR(dev->ahb_clk))
-        {
-       	        __err("get tvd ahb clk error!\n");	
-	        return -1;
-        }
-	
-	dev->module1_clk=clk_get(NULL,"tvdmod1");
-	if(NULL == dev->module1_clk || IS_ERR(dev->module1_clk))
-        {
-       	        __err("get tvd module1 clock error!\n");
-		return -1;
-        }
-        
-        dev->module2_clk=clk_get(NULL,"tvdmod2");
-	if(NULL == dev->module2_clk || IS_ERR(dev->module2_clk))
-        {
-       	        __err("get tvd module2 clock error!\n");	
-		return -1;
-        }
-    
-	dev->dram_clk = clk_get(NULL, "sdram_tvd");
-	if (NULL == dev->dram_clk || IS_ERR(dev->dram_clk))
-        {
-       	        __err("get tvd dram clock error!\n");
-		return -1;
-        }
+	// configure module clock source, choosing from clocks video_pll0 and video_pll1. Before seting clock rate, check if any clock has already configured the desired one.
+	desired_rate = interface == 2 ? 270000000 : 297000000; // interface 2 = YpbPr_P, else CVBS and YPbPr_I
 
-        // configure module clock source, choosing from clocks video_pll0 and video_pll1. Before seting clock rate, check if any clock has already configured the desired one.
-        desired_rate = interface == 2 ? 270000000 : 297000000; // interface 2 = YpbPr_P, else CVBS and YPbPr_I
-	
 	// try video_pll1 clock (video_pll1 is chosen first by display driver, so we can reuse if it already has the desired rate, letting video_pll0 free for other usages)
-	module_clk_src= clk_get(NULL,"video_pll1");
-	if (NULL == module_clk_src || IS_ERR(module_clk_src)) {
+	module1_clk_src= clk_get(&dev->pdev->dev,"pll1");
+	if (NULL == module1_clk_src || IS_ERR(module1_clk_src)) {
 		__err("get tvd clock source error!\n");	
-		return -1;
+		goto cnf_clk_try_pll0;
 	}
-	if (clk_get_rate(module_clk_src) == desired_rate)
+	__inf("pll1 clk_get OK\n");
+
+	current_pll_rate = clk_get_rate(module1_clk_src);
+	__inf("pll1 current rate: %dHz\n", current_pll_rate);
+
+	if (current_pll_rate == desired_rate) {
+		__inf("pll1 selected as module_clk parent clock\n");
 		goto cnf_clk_rate;
-	
-	// video_pll1 doesn't has desired rate, try video_pll0 clock (set the desired rate if it hasn't it already)
-	module_clk_src= clk_get(NULL,"video_pll0");
-	if (NULL == module_clk_src || IS_ERR(module_clk_src)) {
-		__err("get tvd clock source error!\n");	
-		return -1;
 	}
-        
+
+cnf_clk_try_pll0:
+	// video_pll1 doesn't has desired rate, try video_pll0 clock (set the desired rate if it hasn't it already)
+	module1_clk_src= clk_get(&dev->pdev->dev,"pll0");
+	if (NULL == module1_clk_src || IS_ERR(module1_clk_src)) {
+		__err("get tvd clock source error!\n");
+		ret = -1;
+		goto cnf_clk_exit;
+	}
+	__inf("pll1 selected as module_clk parent clock\n");
+
+
 cnf_clk_rate:
-	ret = clk_set_rate(module_clk_src, desired_rate);	// FIXME: this can break something if video_pll0 is already in use, for a second monitor for example
+	ret = clk_set_rate(module1_clk_src, desired_rate);	// FIXME: this can break something if video_pll0 is already in use, for a second monitor for example
 	if (ret == -1)
-        {
-                __err("set tvd parent clock error!\n");
-	        return -1;
-        }
-        
-	ret = clk_set_parent(dev->module1_clk, module_clk_src);
+	{
+		__err("set tvd parent clock error!\n");
+		goto cnf_clk_clk_put;
+	}
+
+	ret = clk_set_parent(dev->module1_clk, module1_clk_src);
 	if (ret == -1)
-        {
-                __err("set tvd parent clock error!\n");
-	        return -1;
-        }
+	{
+		__err("set tvd parent clock error!\n");
+		goto cnf_clk_clk_put;
+	}
 
 	/* add by yaowenjun@allwinnertech.com
 	 * spec p77 TVD_CLK_REG
@@ -486,117 +476,122 @@ cnf_clk_rate:
 	 * 1 to 16
 	 * 0xb,0x5 from dulianping@allwinnertech.com
 	 */
-        if (interface == 2) {//YpbPr_P
-		ret = clk_set_rate(dev->module1_clk, 270000000 / 0x5);
+	if (interface == 2) {//YpbPr_P
+		ret = clk_set_rate(dev->module1_clk, desired_rate / 0x5);
 	} else {//CVBS and YPbPr_I
-		ret = clk_set_rate(dev->module1_clk, 297000000 / 0xb);
+		ret = clk_set_rate(dev->module1_clk, desired_rate / 0xb);
 	}
 
 	if (ret == -1)
-        {
-                __err("set tvd clk rate error!\n");
-	return -1;
-        }
+	{
+		__err("set tvd clk rate error!\n");
+	}
 
-        if(NULL == module_clk_src || IS_ERR(module_clk_src))
-        {
-                __err("tvd module_clk_src NULL hdle\n");
-                return -1;
-        }
-	clk_put(module_clk_src); //use ok
+cnf_clk_clk_put:
+	clk_put(module1_clk_src); //use ok
 
-	return 0;
+cnf_clk_exit:
+	__inf("%s ret=%d", __FUNCTION__, ret);
+	return ret;
 }
 
+/*
 static int tvd_clk_exit(struct tvd_dev *dev)
 {
-        if(NULL == dev->ahb_clk || IS_ERR(dev->ahb_clk))
-        {
-                __err("tvd ahb_clk NULL hdle\n");
-                return -1;
-        }
-        clk_put(dev->ahb_clk);
-        dev->ahb_clk = NULL;
-        
-        if(NULL == dev->module1_clk || IS_ERR(dev->module1_clk))
-        {
-                __err("tvd module1_clk NULL hdle\n");
-                return -1;
-        }
-        clk_put(dev->module1_clk);
-        dev->module1_clk = NULL;
+	if(NULL == dev->ahb_clk || IS_ERR(dev->ahb_clk))
+	{
+		__err("tvd ahb_clk NULL hdle\n");
+		return -1;
+	}
+	clk_put(dev->ahb_clk);
+	dev->ahb_clk = NULL;
 
-        if(NULL == dev->module2_clk || IS_ERR(dev->module2_clk))
-        {
-                __err("tvd module2_clk NULL hdle\n");
-                return -1;
-        }
-        clk_put(dev->module2_clk);
-        dev->module2_clk = NULL;
-        
-        if(NULL == dev->dram_clk || IS_ERR(dev->dram_clk))
-        {
-                __err("tvd dram_clk NULL hdle\n");
-                return -1;
-        }
-        clk_put(dev->dram_clk);
-        dev->dram_clk = NULL;
-        
+	if(NULL == dev->module1_clk || IS_ERR(dev->module1_clk))
+	{
+		__err("tvd module1_clk NULL hdle\n");
+		return -1;
+	}
+	clk_put(dev->module1_clk);
+	dev->module1_clk = NULL;
+
+	if(NULL == dev->module2_clk || IS_ERR(dev->module2_clk))
+	{
+		__err("tvd module2_clk NULL hdle\n");
+		return -1;
+	}
+	clk_put(dev->module2_clk);
+	dev->module2_clk = NULL;
+
+	if(NULL == dev->dram_clk || IS_ERR(dev->dram_clk))
+	{
+		__err("tvd dram_clk NULL hdle\n");
+		return -1;
+	}
+	clk_put(dev->dram_clk);
+	dev->dram_clk = NULL;
+
 	return 0;
 }
+*/
 
 static int tvd_clk_open(struct tvd_dev *dev)
 {
-	if(clk_enable(dev->dram_clk))
-        {
-                __err("tvd dram_clk enable fail\n");
-        }
-        if(clk_enable(dev->module1_clk))
-        {
-                __err("tvd module1_clk enable fail\n");
-        }
-        if(clk_enable(dev->module2_clk))
-        {
-                __err("tvd module2_clk enable fail\n");
-        }
-        if(clk_enable(dev->ahb_clk))
-        {
-                __err("tvd ahb_clk enable fail\n");
-        }	
+	if(clk_prepare_enable(dev->dram_clk))
+	{
+		__err("tvd dram_clk enable fail\n");
+	}
+	if(clk_prepare_enable(dev->module1_clk))
+	{
+		__err("tvd module1_clk enable fail\n");
+	}
+	if(clk_prepare_enable(dev->module2_clk))
+	{
+		__err("tvd module2_clk enable fail\n");
+	}
+	if(clk_prepare_enable(dev->ahb_clk))
+	{
+		__err("tvd ahb_clk enable fail\n");
+	}
 	return 0;
 }
 
 static int tvd_clk_close(struct tvd_dev *dev)
 {
-        if(NULL == dev->ahb_clk || IS_ERR(dev->ahb_clk))
-        {
-                __err("tvd ahb_clk NULL hdle\n");
-                return -1;
-        }
-        clk_disable(dev->ahb_clk);
+	int ret=0;
 
-        if(NULL == dev->module1_clk || IS_ERR(dev->module1_clk))
-        {
-                __err("tvd module1_clk NULL hdle\n");
-                return -1;
-        }
-        clk_disable(dev->module1_clk);
+	if (IS_ERR_OR_NULL(dev->ahb_clk))
+	{
+		__err("tvd ahb_clk NULL hdle\n");
+		ret =-1;
+	}
+	else
+		clk_disable_unprepare(dev->ahb_clk);
 
-        if(NULL == dev->module2_clk || IS_ERR(dev->module2_clk))
-        {
-                __err("tvd module2_clk NULL hdle\n");
-                return -1;
-        }
-        clk_disable(dev->module2_clk);
-        
-        if(NULL == dev->dram_clk || IS_ERR(dev->dram_clk))
-        {
-                __err("tvd dram_clk NULL hdle\n");
-                return -1;
-        }
-        clk_disable(dev->dram_clk);
-        
-	return 0;
+	if (IS_ERR_OR_NULL(dev->module1_clk))
+	{
+		__err("tvd module1_clk NULL hdle\n");
+		ret =-1;
+	}
+	else
+		clk_disable_unprepare(dev->module1_clk);
+
+	if (IS_ERR_OR_NULL(dev->module2_clk))
+	{
+		__err("tvd module2_clk NULL hdle\n");
+		ret =-1;
+	}
+	else
+		clk_disable_unprepare(dev->module2_clk);
+
+	if (IS_ERR_OR_NULL(dev->dram_clk))
+	{
+		__err("tvd dram_clk NULL hdle\n");
+		ret =-1;
+	}
+	else
+		clk_disable_unprepare(dev->dram_clk);
+
+	return ret;
 }
 
 
@@ -626,40 +621,46 @@ static unsigned int tvd_poll(struct file *file, struct poll_table_struct *wait)
 static int tvd_open(struct file *file)
 {
 	struct tvd_dev *dev = video_drvdata(file);
+	int ret=0;
 	
-	__dbg("%s\n", __FUNCTION__);
+	__inf("%s\n", __FUNCTION__);
+
+	if (mutex_lock_interruptible(&dev->mutex))
+		return -ERESTARTSYS;
 
 	if (dev->opened == 1) {
 		__err("device open busy\n");
-		return -EBUSY;
+		ret = -EBUSY;
+		goto tvd_open_unlock;
 	}
-		
-	if (tvd_clk_init(dev,0)) 
-	{
-		__err("clock init fail!\n");
-	}
-	tvd_clk_open(dev);
 
+	tvd_clk_open(dev);
 	TVD_init(dev->regs);
 	
 	dev->opened=1;
-	
-	return 0;
+
+tvd_open_unlock:
+	mutex_unlock(&dev->mutex);
+
+	__inf("%s end\n", __FUNCTION__);
+	return ret;
 }
 
 static int tvd_close(struct file *file)
 {
 	struct tvd_dev *dev = video_drvdata(file);
-	
-	__dbg("%s\n", __FUNCTION__); 
-	
-	tvd_clk_close(dev);
-	
-	vb2_queue_release(&dev->vb_vidq);
 
+	__inf("%s\n", __FUNCTION__);
+	mutex_lock(&dev->mutex);
+
+	tvd_clk_close(dev);
+	vb2_queue_release(&dev->vb_vidq);
+	v4l2_fh_release(file);
 	dev->opened=0;
-	
-        return 0;
+
+	mutex_unlock(&dev->mutex);
+	__inf("%s end\n", __FUNCTION__);
+	return 0;
 }
 
 static int tvd_mmap(struct file *file, struct vm_area_struct *vma)
@@ -685,7 +686,7 @@ static const struct v4l2_file_operations fops = {
 	.release  = tvd_close,
 	.read     = tvd_read,
 	.poll	  = tvd_poll,
-	.ioctl    = video_ioctl2,
+	.unlocked_ioctl    = video_ioctl2,
 	.mmap     = tvd_mmap,
 };
 
@@ -695,18 +696,22 @@ static const struct v4l2_file_operations fops = {
 	IOCTL vidioc handling
    ------------------------------------------------------------------*/
 
-static int vidioc_querycap(struct file *file, void  *priv,struct v4l2_capability *cap)
+static int vidioc_querycap(struct file *file, void  *priv,
+		struct v4l2_capability *cap)
 {
 	struct tvd_dev *dev = video_drvdata(file);
 
 	__dbg("%s\n", __FUNCTION__);
 
-	strcpy(cap->driver, "tvd");
-	strcpy(cap->card, "tvd");
-	strlcpy(cap->bus_info, dev->v4l2_dev.name, sizeof(cap->bus_info));
+	strscpy(cap->driver, "tvd", sizeof(cap->driver));
+	strscpy(cap->card, "tvd", sizeof(cap->card));
+	snprintf(cap->bus_info, sizeof(cap->bus_info), "platform:%s",
+			dev->pdev->dev.of_node->name);
 
 	cap->version = TVD_VERSION;
-	cap->capabilities = V4L2_CAP_VIDEO_CAPTURE|V4L2_CAP_STREAMING|V4L2_CAP_READWRITE;
+
+	cap->device_caps = V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_STREAMING|V4L2_CAP_READWRITE;
+	cap->capabilities = cap->device_caps | V4L2_CAP_DEVICE_CAPS;
 	return 0;
 }
 
@@ -816,11 +821,12 @@ static int vidioc_s_fmt_vid_cap(struct file *file, void *priv,struct v4l2_format
 		__err("%s: wrong buffer type (%d), only V4L2_BUF_TYPE_VIDEO_CAPTURE is supported\n", __FUNCTION__, format->type);
 		return -EINVAL;
 	}
-	
+
 	if (is_generating(dev)) {
 		__err("%s: device busy\n", __func__);
 		return -EBUSY;
 	}
+
 	
 	/* check if format is valid, correct it if not */
 	vidioc_try_fmt_vid_cap(file, priv, format);
@@ -844,6 +850,7 @@ static int vidioc_s_fmt_vid_cap(struct file *file, void *priv,struct v4l2_format
 	return apply_format(dev);
 }
 
+#if 0
 static int vidioc_g_fmt_type_private(struct file *file, void *priv,struct v4l2_format *format)
 {
 	struct tvd_dev *dev = video_drvdata(file);
@@ -894,6 +901,7 @@ static int vidioc_s_fmt_type_private(struct file *file, void *priv,struct v4l2_f
 
 	return apply_format(dev);
 }
+#endif
 
 
 
@@ -918,12 +926,13 @@ static int vidioc_qbuf(struct file *file, void *priv, struct v4l2_buffer *p)
 	struct tvd_dev *dev = video_drvdata(file);
 	__dbg("%s: buffer %d\n", __FUNCTION__, p->index);
 	
-	return vb2_qbuf(&dev->vb_vidq, p);
+	return vb2_qbuf(&dev->vb_vidq, dev->v4l2_dev.mdev, p);
 }
 
 static int vidioc_dqbuf(struct file *file, void *priv, struct v4l2_buffer *p)
 {
 	int ret;
+	int i;
 	struct tvd_dev *dev = video_drvdata(file);
 	__dbg("%s: buffer dequeue requested\n", __FUNCTION__);
 
@@ -934,8 +943,8 @@ static int vidioc_dqbuf(struct file *file, void *priv, struct v4l2_buffer *p)
 	else                     {__err("%s: error dequeueing, error %d\n", __FUNCTION__, -ret);}
 	
 	#if DIRTY_HACK_RETURN_DMA_ADDR
-	for (int i = 0; i < dev->vb_vidq.num_buffers; i++) {
-		if (dev->vb_vidq.bufs[i]->v4l2_buf.index == p->index)
+	for (i = 0; i < dev->vb_vidq.num_buffers; i++) {
+		if (dev->vb_vidq.bufs[i]->index == p->index)
 			p->reserved = vb2_dma_contig_plane_dma_addr(dev->vb_vidq.bufs[i], 0);
 	}
 	#endif
@@ -1174,8 +1183,8 @@ static const struct v4l2_ioctl_ops ioctl_ops = {
 	.vidioc_g_fmt_vid_cap           = vidioc_g_fmt_vid_cap,
 	.vidioc_try_fmt_vid_cap         = vidioc_try_fmt_vid_cap,
 	.vidioc_s_fmt_vid_cap           = vidioc_s_fmt_vid_cap, 
-	.vidioc_s_fmt_type_private      = vidioc_s_fmt_type_private, 
-	.vidioc_g_fmt_type_private      = vidioc_g_fmt_type_private, 
+	//.vidioc_s_fmt_type_private      = vidioc_s_fmt_type_private,
+	//.vidioc_g_fmt_type_private      = vidioc_g_fmt_type_private,
 	.vidioc_reqbufs                 = vidioc_reqbufs,
 	.vidioc_querybuf                = vidioc_querybuf,
 	.vidioc_qbuf                    = vidioc_qbuf,
@@ -1199,17 +1208,17 @@ static struct video_device device = {
 	.fops           = &fops,
 	.ioctl_ops 	= &ioctl_ops,
 	.release	= video_device_release,
+
 };
 
 
 
 /* ------------------------------------------------------------------
 	Videobuf operations
-   ------------------------------------------------------------------*/
-
-static int queue_setup(struct vb2_queue *vq, const struct v4l2_format *fmt,
+   ----------------------------------*/
+static int queue_setup(struct vb2_queue *vq, /*const struct v4l2_format *fmt,*/
 				unsigned int *nbuffers, unsigned int *nplanes,
-				unsigned int sizes[], void *alloc_ctxs[])
+				unsigned int sizes[], /*void*/ struct device *alloc_ctxs[])
 {
 	struct tvd_dev *dev = vb2_get_drv_priv(vq);
 	
@@ -1221,7 +1230,7 @@ static int queue_setup(struct vb2_queue *vq, const struct v4l2_format *fmt,
 			*nbuffers = 3;
 		*nplanes = 1;
 		sizes[0] = get_frmbytes(dev->fmt, dev->width, dev->height);
-		alloc_ctxs[0] = dev->alloc_ctx; // TODO: remove in new version of vb2, alloc_ctx was removed
+	//	alloc_ctxs[0] = dev->alloc_ctx; // TODO: remove in new version of vb2, alloc_ctx was removed
 		return 0;
 	}
 	else /* called from VIDIOC_CREATE_BUFS */
@@ -1238,7 +1247,7 @@ static int buffer_init(struct vb2_buffer *vb)
 	struct tvd_dev *dev = vb2_get_drv_priv(vb->vb2_queue);
 	struct buffer *buf = container_of(vb, struct buffer, vb);
 
-	__dbg("%s: buffer %d\n", __FUNCTION__, vb->v4l2_buf.index);
+	__dbg("%s: buffer %d\n", __FUNCTION__, vb->index);
 
 	BUG_ON(NULL == dev->fmt);
 
@@ -1265,7 +1274,7 @@ static int buffer_prepare(struct vb2_buffer *vb)
 	struct buffer *buf = container_of(vb, struct buffer, vb);
 	unsigned long size;
 
-	__dbg("%s: buffer %d\n", __FUNCTION__, vb->v4l2_buf.index);
+	__dbg("%s: buffer %d\n", __FUNCTION__, vb->index);
 
 	BUG_ON(NULL == dev->fmt);
 
@@ -1294,7 +1303,7 @@ static void buffer_queue(struct vb2_buffer *vb)
 	struct dmaqueue *vidq = &dev->vidq;
 	unsigned long flags = 0;
 
-	__dbg("%s: buffer %d\n", __FUNCTION__, vb->v4l2_buf.index);
+	__dbg("%s: buffer %d\n", __FUNCTION__, vb->index);
 
 	/* buffer is queued and we have now the control of it */
 	spin_lock_irqsave(&dev->slock, flags);
@@ -1311,11 +1320,11 @@ static int start_streaming(struct vb2_queue *vq, unsigned int count)
 	return start_generating(dev);
 }
 
-static int stop_streaming(struct vb2_queue *vq)
+static void stop_streaming(struct vb2_queue *vq)
 {
 	struct tvd_dev *dev = vb2_get_drv_priv(vq);
 	__dbg("%s\n", __FUNCTION__);
-	return stop_generating(dev);
+	stop_generating(dev);
 }
 
 static void wait_finish(struct vb2_queue *vq)
@@ -1345,14 +1354,17 @@ static struct vb2_ops buffers_ops = {
 
 static int tvd_probe(struct platform_device *pdev)
 {
+	struct device_node *np = pdev->dev.of_node;
 	struct tvd_dev *dev;
 	struct resource *res;
 	struct video_device *vfd;
 	int ret = 0;
-	__dbg("%s\n", __FUNCTION__);
+	__dbg("%s start\n", __FUNCTION__);
+
 
 	/*request mem for dev*/	
-	dev = kzalloc(sizeof(struct tvd_dev), GFP_KERNEL);
+	//dev = kzalloc(sizeof(struct tvd_dev), GFP_KERNEL);
+	dev = devm_kzalloc(&pdev->dev, sizeof(*dev), GFP_KERNEL);
 	if (!dev) {
 		__err("request dev mem failed!\n");
 		return -ENOMEM;
@@ -1391,28 +1403,57 @@ static int tvd_probe(struct platform_device *pdev)
 		ret = -ENXIO;
 		goto err_regs_unmap;
 	}
-	
 	dev->irq = res->start;
 	
 	ret = request_irq(dev->irq, tvd_irq, 0, pdev->name, dev);
 	if (ret) {
 		__err("failed to install irq (%d)\n", ret);
-		goto err_clk;
+		goto err_regs_unmap;
 	}
 	
+	pdev->dev.coherent_dma_mask = DMA_BIT_MASK(32);
+
 	/* v4l2 device register */
 	ret = v4l2_device_register(&pdev->dev, &dev->v4l2_dev);	
 	if (ret) {
 		__err("Error registering v4l2 device\n");
-		goto err_irq;
+		goto err_regs_unmap;
 		
 	}
 
 	dev_set_drvdata(&(pdev)->dev, (dev));
 
+	ret = -ENXIO;
+	dev->ahb_clk=devm_clk_get(&dev->pdev->dev, "ahb");
+	if (NULL == dev->ahb_clk || IS_ERR(dev->ahb_clk))
+	{
+		__err("get tvd ahb clk error!\n");
+		goto unreg_dev;
+	}
+
+	dev->module1_clk=devm_clk_get(&dev->pdev->dev,"sclk1");
+	if(NULL == dev->module1_clk || IS_ERR(dev->module1_clk))
+	{
+		__err("get tvd module1 clock error!\n");
+		goto unreg_dev;
+	}
+
+	dev->module2_clk=devm_clk_get(&dev->pdev->dev, "sclk2");
+	if(NULL == dev->module2_clk || IS_ERR(dev->module2_clk))
+	{
+		__err("get tvd module2 clock error!\n");
+		goto unreg_dev;
+	}
+
+	dev->dram_clk = devm_clk_get(&dev->pdev->dev, "ram");
+	if (NULL == dev->dram_clk || IS_ERR(dev->dram_clk))
+	{
+		__err("get tvd dram clock error!\n");
+		goto unreg_dev;
+	}
+
 	if (tvd_clk_init(dev,0)) {
 		__err("clock init fail!\n");
-		ret = -ENXIO;
 		goto unreg_dev;
 	}
 
@@ -1445,16 +1486,21 @@ static int tvd_probe(struct platform_device *pdev)
 	__inf("V4L2 device registered as %s\n",video_device_node_name(vfd));
 	
 	/* init videobuf2 allocation */
+	/*
 	dev->alloc_ctx = vb2_dma_contig_init_ctx(&pdev->dev);
 	if (IS_ERR(dev->alloc_ctx)) {
 		__err("DMA contig init error\n");
 		goto unreg_vdev;
 	}
+	*/
+	dev->alloc_ctx = &pdev->dev;
 
 	/* init video buffer queue */
 	memset(&dev->vb_vidq, 0, sizeof(dev->vb_vidq));
 	dev->vb_vidq.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-	dev->vb_vidq.io_modes = VB2_MMAP;
+	dev->vb_vidq.timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
+	dev->vb_vidq.io_modes = VB2_MMAP | VB2_DMABUF;
+	dev->vb_vidq.dev = &pdev->dev;
 	dev->vb_vidq.drv_priv = dev;
 	dev->vb_vidq.buf_struct_size = sizeof(struct buffer);
 	dev->vb_vidq.ops = &buffers_ops;
@@ -1462,7 +1508,7 @@ static int tvd_probe(struct platform_device *pdev)
 	ret = vb2_queue_init(&dev->vb_vidq);
 	if (ret < 0) {
 		__err("vb2 queue init error\n");
-		goto clean_alloc_ctx;
+		goto /*clean_alloc_ctx*/unreg_vdev;
 	}
 	
 	/* Provide a mutex to v4l2 core. It will be used to protect all fops and v4l2 ioctls. */
@@ -1491,40 +1537,42 @@ static int tvd_probe(struct platform_device *pdev)
 	dev->frameival_secs.numerator   = 0;
 	dev->frameival_secs.denominator = 0;
 	dev->frameival_jiffies          = 0;
+	dev->opened = 0;
+
 	TVD_init(dev->regs);
 	ret = apply_format(dev);
 
+	__dbg("%s start ret=0\n", __FUNCTION__);
 	return 0;
-
+/*
 clean_alloc_ctx:
 	vb2_dma_contig_cleanup_ctx(dev->alloc_ctx);
+*/
 unreg_vdev:
 	video_unregister_device(dev->vfd);
 rel_vdev:
 	video_device_release(vfd);
 err_clk:
-	tvd_clk_exit(dev);	
+	//tvd_clk_exit(dev);
 unreg_dev:
-	v4l2_device_unregister(&dev->v4l2_dev);	
-	kfree(dev);
+	v4l2_device_unregister(&dev->v4l2_dev);
 err_irq:
 	free_irq(dev->irq, dev);
 err_regs_unmap:
 	iounmap(dev->regs);
 err_req_region:
 	release_resource(dev->regs_res);
-	kfree(dev->regs_res);
 err_info:
-	kfree(dev);
-	__err("failed to install\n");
+	//kfree(dev);
+	__err("%s failed to install\n", __FUNCTION__);
 	
 	return ret;
 }
 
 static int tvd_release(void)
 {
-	struct tvd_dev *dev;
 	struct list_head *list;
+	struct tvd_dev *dev;
 
 	__dbg("%s\n", __FUNCTION__);
 	
@@ -1537,22 +1585,25 @@ static int tvd_release(void)
 		v4l2_info(&dev->v4l2_dev, "unregistering %s\n", video_device_node_name(dev->vfd));
 		video_unregister_device(dev->vfd);
 		v4l2_device_unregister(&dev->v4l2_dev);
-		kfree(dev);
+		//kfree(dev);
 	}
 
 	return 0;
 }
 
-static int __devexit tvd_remove(struct platform_device *pdev)
+static int tvd_remove(struct platform_device *pdev)
 {
-	struct tvd_dev *dev=(struct tvd_dev *)dev_get_drvdata(&(pdev)->dev);	
-	vb2_dma_contig_cleanup_ctx(dev->alloc_ctx);
+	struct tvd_dev *dev=(struct tvd_dev *)platform_get_drvdata(pdev);
+	__inf("%s start\n", __FUNCTION__);
+	/*vb2_dma_contig_cleanup_ctx(dev->alloc_ctx); */
 	free_irq(dev->irq, dev);//	
-	tvd_clk_exit(dev);
+	//tvd_clk_exit(dev);
 	iounmap(dev->regs);
 	release_resource(dev->regs_res);
-	kfree(dev->regs_res);
-	kfree(dev);
+	//kfree(dev->regs_res);
+	//kfree(dev);
+	tvd_release();
+	__inf("%s end\n", __FUNCTION__);
 	return 0;
 }
 
@@ -1583,17 +1634,27 @@ static int tvd_resume(struct platform_device *pdev)
 	return ret;
 }
 
+static const struct of_device_id drvr_of_match[] = {
+		{
+				.compatible ="allwinner,sun4i-a10-tv-decoder"
+		},
+		{},
+};
+
 static struct platform_driver tvd_driver = {
 	.probe		= tvd_probe,
-	.remove		= __devexit_p(tvd_remove),
+	.remove		= tvd_remove,
 	.suspend	= tvd_suspend,
 	.resume		= tvd_resume,
 	.driver = {
 		.name	= "tvd",
 		.owner	= THIS_MODULE,
+		.of_match_table = drvr_of_match,
 	}
 };
 
+#if 0
+/*
 #define AW_IRQ_GIC_START        32
 #define AW_IRQ_TVD       	(AW_IRQ_GIC_START + 61)    /* TVD   */
 
@@ -1608,18 +1669,20 @@ static struct resource tvd_resource[2] = {
 		.end	= AW_IRQ_TVD,
 		.flags	= IORESOURCE_IRQ,
 	},
-};
+}; */
 
 static struct platform_device tvd_device = {
 	.name           	= "tvd",
-        .id             	= -1, // FIXME
-	.num_resources		= ARRAY_SIZE(tvd_resource),
-        .resource       	= tvd_resource,
+	.id             	= -1, // FIXME
+	//.num_resources		= ARRAY_SIZE(tvd_resource),
+	//.resource       	= tvd_resource,
 	.dev            	= {
 		.coherent_dma_mask = DMA_BIT_MASK(32),
 	}
 };
+#endif
 
+#if 0
 static int __init tvd_init(void)
 {
 	__u32 ret=0;
@@ -1645,9 +1708,11 @@ static void __exit tvd_exit(void)
 	tvd_release();
 	platform_driver_unregister(&tvd_driver);
 }
+#endif
 
-module_init(tvd_init);
-module_exit(tvd_exit);
+//module_init(tvd_init);
+//module_exit(tvd_exit);
+module_platform_driver(tvd_driver);
 
 MODULE_AUTHOR("jshwang");
 MODULE_LICENSE("GPL");
