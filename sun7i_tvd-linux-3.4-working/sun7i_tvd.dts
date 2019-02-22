@@ -1,0 +1,11 @@
+	tvd: tv-decoder@1c08000 {
+		compatible = "allwinner,sun4i-a10-tv-decoder";
+		reg = <0x01c08000 0x1000>;
+		clocks = <&ccu CLK_AHB_TVD>, <&ccu CLK_TVD>,
+			<&ccu CLK_TVD_SCLK2>, <&ccu CLK_DRAM_TVD>,
+			<&ccu CLK_PLL_VIDEO0>, <&ccu CLK_PLL_VIDEO1>;
+		clock-names = "ahb", "sclk1",
+			"sclk2", "ram",
+			"pll0", "pll1";
+		interrupts = <GIC_SPI 61 IRQ_TYPE_LEVEL_HIGH>;
+	};

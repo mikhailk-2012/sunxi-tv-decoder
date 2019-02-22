@@ -1,0 +1,21 @@
+From 621c685d1b01fa786908af241642a522ca57c595 Mon Sep 17 00:00:00 2001
+From: Mikhail Kofanov <c5r@yandex.ru>
+Date: Fri, 22 Feb 2019 13:01:00 +0300
+Subject: clk: sunxi-ng: sun4i: Export more video PLLs CLK_PLL_VIDEO0 and
+ CLK_PLL_VIDEO1 are used by tv-decoder
+
+
+diff --git a/include/dt-bindings/clock/sun4i-a10-ccu.h b/include/dt-bindings/clock/sun4i-a10-ccu.h
+index e4fa61b..dc0c607 100644
+--- a/include/dt-bindings/clock/sun4i-a10-ccu.h
++++ b/include/dt-bindings/clock/sun4i-a10-ccu.h
+@@ -43,7 +43,9 @@
+ #define _DT_BINDINGS_CLK_SUN4I_A10_H_
+ 
+ #define CLK_HOSC		1
++#define CLK_PLL_VIDEO0	8
+ #define CLK_PLL_VIDEO0_2X	9
++#define CLK_PLL_VIDEO1	17
+ #define CLK_PLL_VIDEO1_2X	18
+ #define CLK_CPU			20
+ 
