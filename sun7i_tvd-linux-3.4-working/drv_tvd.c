@@ -916,9 +916,20 @@ static int vidioc_reqbufs(struct file *file, void *priv,struct v4l2_requestbuffe
 static int vidioc_querybuf(struct file *file, void *priv, struct v4l2_buffer *p)
 {
 	struct tvd_dev *dev = video_drvdata(file);
+	int ret;
+	dma_addr_t addr_org;
+
 	__dbg("%s: buffer %d\n", __FUNCTION__, p->index);
 	
-	return vb2_querybuf(&dev->vb_vidq, p);
+	ret = vb2_querybuf(&dev->vb_vidq, p);
+	if (!ret)
+	{
+		// pass physical address to userspace **FIXME**
+		addr_org = vb2_dma_contig_plane_dma_addr(dev->vb_vidq.bufs[p->index], 0);
+		p->reserved2 = addr_org;
+		__dbg("memory:%x offset:%x pa:%x\n", p->memory, p->m.offset, p->reserved2);
+	}
+	return ret;
 }
 
 static int vidioc_qbuf(struct file *file, void *priv, struct v4l2_buffer *p)
