@@ -1219,7 +1219,8 @@ static struct video_device device = {
 	.fops           = &fops,
 	.ioctl_ops 	= &ioctl_ops,
 	.release	= video_device_release,
-
+	.tvnorms	= V4L2_STD_NTSC | V4L2_STD_PAL,
+	.device_caps = V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_STREAMING | V4L2_CAP_READWRITE,
 };
 
 
@@ -1472,6 +1473,7 @@ static int tvd_probe(struct platform_device *pdev)
 	ret = -ENOMEM;
 	vfd = video_device_alloc();
 	if (!vfd) {
+		__err("video_device_alloc() fail!\n");
 		goto err_clk;
 	}	
 
@@ -1479,8 +1481,9 @@ static int tvd_probe(struct platform_device *pdev)
 	vfd->v4l2_dev = &dev->v4l2_dev;
 
 	dev_set_name(&vfd->dev, "tvd");
-	ret = video_register_device(vfd, VFL_TYPE_GRABBER, video_nr);
+	ret = video_register_device(vfd, VFL_TYPE_GRABBER, -1);  /*automatic device number*/
 	if (ret < 0) {
+		__err("video_register_device() fail! ret=%d\n", ret);
 		goto rel_vdev;
 	}	
 	video_set_drvdata(vfd, dev);
@@ -1489,9 +1492,6 @@ static int tvd_probe(struct platform_device *pdev)
 	/* Now that everything is fine, let's add it to device list */
 	list_add_tail(&dev->devlist, &devlist);
 
-	if (video_nr != -1) {
-		video_nr++;
-	}
 	dev->vfd = vfd;
 
 	__inf("V4L2 device registered as %s\n",video_device_node_name(vfd));

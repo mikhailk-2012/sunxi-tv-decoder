@@ -48,7 +48,6 @@
 
 #define BLINK_DELAY   HZ/2
 
-static unsigned video_nr = 1;
 static unsigned first_flag = 0;
 //static struct timer_list timer;
 
